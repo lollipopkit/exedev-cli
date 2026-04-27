@@ -9,15 +9,23 @@ repository = "https://github.com/local/exedev-k8s"
 
 [workspace.dependencies]
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
-comfy-table = "7.1"
-dialoguer = "0.12"
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+comfy-table = { version = "7.2", default-features = false }
+dialoguer = { version = "0.12", default-features = false }
 dotenvy = "0.15"
 exedev-core = { path = "core" }
-rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+rand = { version = "0.10", default-features = false, features = ["thread_rng"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
-tokio = { version = "1.48", features = ["macros", "process", "rt-multi-thread"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "process", "rt-multi-thread"] }
+
+[profile.dist]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

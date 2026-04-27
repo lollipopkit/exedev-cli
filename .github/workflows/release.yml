@@ -55,8 +55,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binaries
-        run: cargo build --release --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
+      - name: Build optimized release binaries
+        run: cargo build --profile dist --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
 
       - name: Package release archive
         id: package
@@ -71,8 +71,8 @@ jobs:
 
           archive="exedev-clis-${tag}-${{ matrix.platform }}.tar.gz"
           mkdir -p package dist
-          cp "target/${{ matrix.target }}/release/exedev-ctl" package/
-          cp "target/${{ matrix.target }}/release/exedev-k8s" package/
+          cp "target/${{ matrix.target }}/dist/exedev-ctl" package/
+          cp "target/${{ matrix.target }}/dist/exedev-k8s" package/
           cp README.md README.zh-CN.md .env.example fleet.example.yaml package/
           tar -czf "dist/${archive}" -C package .
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"

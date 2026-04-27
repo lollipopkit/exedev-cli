@@ -1,4 +1,4 @@
-# exe.dev Kubernetes Fleet
+# exe.dev ctl
 
 [中文](README.zh-CN.md)
 

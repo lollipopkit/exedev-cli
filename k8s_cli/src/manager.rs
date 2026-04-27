@@ -7,7 +7,7 @@ use super::{
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use exedev_core::{API_KEY_ENV, client::ExeDevClient, shell};
-use rand::{Rng, distr::Alphanumeric};
+use rand::{RngExt, distr::Alphanumeric};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
