@@ -19,6 +19,7 @@ cargo build -p exedev-ctl
 Set the API token and list VMs:
 
 ```sh
+# You can create one from https://exe.dev/user
 export EXE_DEV_API_KEY="exe0...."
 ./target/debug/exedev-ctl ls
 ```
@@ -66,6 +67,7 @@ Bootstrap a new k3s fleet:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
+# You can create one from https://login.tailscale.com/admin/machines/new-linux
 export TS_AUTHKEY="tskey-auth-..."
 exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
 ```

@@ -19,6 +19,7 @@ cargo build -p exedev-ctl
 设置 API token 并列出 VMs：
 
 ```sh
+# 你可以从 https://exe.dev/user 创建一个
 export EXE_DEV_API_KEY="exe0...."
 ./target/debug/exedev-ctl ls
 ```
@@ -65,6 +66,7 @@ bootstrap 新 k3s fleet：
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
+# 你可以从 https://login.tailscale.com/admin/machines/new-linux 创建一个
 export TS_AUTHKEY="tskey-auth-..."
 exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
 ```
