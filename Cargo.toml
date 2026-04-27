@@ -4,8 +4,9 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-license = "MIT"
-repository = "https://github.com/local/exedev-k8s"
+authors = ["lollipopkit <a@lollipopkit.com>"]
+license = "OSL-3.0"
+repository = "https://github.com/local/exedev-cli"
 
 [workspace.dependencies]
 anyhow = "1.0"

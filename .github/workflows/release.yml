@@ -73,7 +73,7 @@ jobs:
           mkdir -p package dist
           cp "target/${{ matrix.target }}/dist/exedev-ctl" package/
           cp "target/${{ matrix.target }}/dist/exedev-k8s" package/
-          cp README.md README.zh-CN.md .env.example fleet.example.yaml package/
+          cp README.md README.zh-CN.md LICENSE .env.example fleet.example.yaml package/
           tar -czf "dist/${archive}" -C package .
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
 
