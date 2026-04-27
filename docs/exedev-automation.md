@@ -212,3 +212,6 @@ scripts/exedev-label-nodes
 
 `exedev-sync --dry-run` must print a plan first and must not delete any VM.
 VM deletion must require separate confirmation to avoid accidental disk loss.
+
+The Rust `exedev-k8s` binary now covers the first integrated version of this
+flow for k3s fleets. See [`docs/exedev-k8s.md`](exedev-k8s.md).

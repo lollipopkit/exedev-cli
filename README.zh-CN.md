@@ -85,7 +85,21 @@ VM 加入 cluster 后应用 node labels：
 kubectl label node p1-a-1 exedev.dev/project=project1 exedev.dev/task=a exedev.dev/pool=project1-a
 ```
 
+从 `fleet.yaml` 预览完整 k3s fleet bootstrap：
+
+```sh
+exedev-k8s plan --fleet fleet.yaml --mode new
+```
+
+bootstrap exe.dev VMs，安装 Tailscale/k3s，标记 nodes，并部署 manifests：
+
+```sh
+export TS_AUTHKEY="tskey-auth-..."
+exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
+```
+
 完整 CLI 说明见 [`docs/exedevctl.md`](docs/exedevctl.md)。
+Kubernetes fleet CLI 说明见 [`docs/exedev-k8s.md`](docs/exedev-k8s.md)。
 
 ## Safety Notes
 
@@ -102,6 +116,8 @@ exedevctl --yes rm p1-a-1
 
 - [`docs/exedevctl.md`](docs/exedevctl.md)：CLI build、authentication、output、
   fallback behavior 和支持的 exe.dev commands。
+- [`docs/exedev-k8s.md`](docs/exedev-k8s.md)：fleet planning、k3s bootstrap、
+  node labeling、workload deployment、status 和 destroy workflows。
 - [`docs/exedev-automation.md`](docs/exedev-automation.md)：HTTPS `POST /exec`、
   API token generation、command automation 和未来 sync scripts。
 - [`docs/node-labeling.md`](docs/node-labeling.md)：Kubernetes labels、taints、

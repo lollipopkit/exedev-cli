@@ -87,7 +87,21 @@ Apply node labels after the VM joins the cluster:
 kubectl label node p1-a-1 exedev.dev/project=project1 exedev.dev/task=a exedev.dev/pool=project1-a
 ```
 
+Preview a full k3s fleet bootstrap from `fleet.yaml`:
+
+```sh
+exedev-k8s plan --fleet fleet.yaml --mode new
+```
+
+Bootstrap exe.dev VMs, install Tailscale/k3s, label nodes, and deploy manifests:
+
+```sh
+export TS_AUTHKEY="tskey-auth-..."
+exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
+```
+
 For the full CLI surface, see [`docs/exedevctl.md`](docs/exedevctl.md).
+For the Kubernetes fleet CLI, see [`docs/exedev-k8s.md`](docs/exedev-k8s.md).
 
 ## Safety Notes
 
@@ -106,6 +120,8 @@ exedevctl --yes rm p1-a-1
 
 - [`docs/exedevctl.md`](docs/exedevctl.md): CLI build, authentication, output,
   fallback behavior, and supported exe.dev commands.
+- [`docs/exedev-k8s.md`](docs/exedev-k8s.md): fleet planning, k3s bootstrap,
+  node labeling, workload deployment, status, and destroy workflows.
 - [`docs/exedev-automation.md`](docs/exedev-automation.md): HTTPS
   `POST /exec`, API token generation, command automation, and future sync
   scripts.

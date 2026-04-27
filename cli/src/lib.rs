@@ -1,6 +1,9 @@
 mod cli;
 mod client;
 mod command;
+mod k8s_cli;
+mod k8s_fleet;
+mod k8s_manager;
 mod output;
 mod ssh;
 
@@ -14,6 +17,11 @@ const API_KEY_ENV: &str = "EXE_DEV_API_KEY";
 pub async fn run() -> Result<()> {
     let cli = cli::Cli::parse();
     run_cli(cli).await
+}
+
+pub async fn run_k8s() -> Result<()> {
+    let cli = k8s_cli::K8sCli::parse();
+    k8s_manager::run(cli).await
 }
 
 async fn run_cli(cli: cli::Cli) -> Result<()> {
