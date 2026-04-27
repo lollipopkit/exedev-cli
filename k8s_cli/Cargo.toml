@@ -1,18 +1,21 @@
 [package]
-name = "exedevctl"
+name = "exedev-k8s"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "exedevctl"
+name = "exedev-k8s"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-comfy-table.workspace = true
+dialoguer.workspace = true
 exedev-core.workspace = true
+rand.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 tokio.workspace = true

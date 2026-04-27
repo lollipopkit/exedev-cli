@@ -5,10 +5,10 @@
 applies Kubernetes node labels and taints, and can deploy manifests with
 `kubectl apply -f`.
 
-Build it with the existing Cargo package:
+Build it with its Cargo package:
 
 ```sh
-cargo build -p exedevctl
+cargo build -p exedev-k8s
 ```
 
 Run the binary directly:

@@ -1,5 +1,5 @@
-use crate::DEFAULT_ENDPOINT;
 use clap::{Args, Parser, Subcommand};
+use exedev_core::DEFAULT_ENDPOINT;
 
 #[derive(Debug, Parser)]
 #[command(name = "exedevctl")]

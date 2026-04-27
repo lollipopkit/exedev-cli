@@ -257,20 +257,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedev-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dialoguer",
+ "reqwest",
+ "thiserror",
+]
+
+[[package]]
+name = "exedev-k8s"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dialoguer",
+ "exedev-core",
+ "rand",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+]
+
+[[package]]
 name = "exedevctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "comfy-table",
- "dialoguer",
- "rand",
- "reqwest",
- "serde",
+ "exedev-core",
  "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror",
  "tokio",
 ]
 

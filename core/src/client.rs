@@ -8,14 +8,14 @@ enum ApiError {
     Http { status: StatusCode, body: String },
 }
 
-pub(crate) struct ExeDevClient {
+pub struct ExeDevClient {
     endpoint: String,
     token: String,
     http: reqwest::Client,
 }
 
 impl ExeDevClient {
-    pub(crate) fn new(endpoint: String, token: String) -> Self {
+    pub fn new(endpoint: String, token: String) -> Self {
         Self {
             endpoint,
             token,
@@ -23,7 +23,7 @@ impl ExeDevClient {
         }
     }
 
-    pub(crate) async fn exec(&self, command: &str) -> Result<String> {
+    pub async fn exec(&self, command: &str) -> Result<String> {
         let response = self
             .http
             .post(&self.endpoint)

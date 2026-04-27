@@ -50,6 +50,9 @@ pub(crate) struct Project {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskPool {
     pub(crate) nodes: usize,
+    // Reserved for future workload manifest generation. VM allocation still
+    // uses `nodes`; Kubernetes deployments own their replica counts today.
+    #[allow(dead_code)]
     pub(crate) replicas: Option<usize>,
     pub(crate) vm_prefix: String,
     pub(crate) isolated: Option<bool>,
@@ -134,11 +137,6 @@ impl FleetFile {
                 }
                 if task.vm_prefix.trim().is_empty() {
                     bail!("projects.{project_name}.tasks.{task_name}.vmPrefix must not be empty");
-                }
-                if task.replicas == Some(0) {
-                    bail!(
-                        "projects.{project_name}.tasks.{task_name}.replicas must be greater than 0 when set"
-                    );
                 }
             }
         }

@@ -90,6 +90,7 @@ kubectl label node p1-a-1 exedev.dev/project=project1 exedev.dev/task=a exedev.d
 Preview a full k3s fleet bootstrap from `fleet.yaml`:
 
 ```sh
+cargo build -p exedev-k8s
 exedev-k8s plan --fleet fleet.yaml --mode new
 ```
 

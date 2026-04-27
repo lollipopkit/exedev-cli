@@ -1,5 +1,5 @@
-use crate::DEFAULT_ENDPOINT;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use exedev_core::DEFAULT_ENDPOINT;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]

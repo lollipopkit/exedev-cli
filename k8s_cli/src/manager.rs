@@ -1,19 +1,18 @@
-use crate::{
-    API_KEY_ENV,
-    client::ExeDevClient,
-    command,
-    k8s_cli::{
+use super::{
+    cli::{
         BootstrapCmd, ClusterMode, DeployCmd, DestroyCmd, K8sCli, K8sCommands, PlanCmd, StatusCmd,
     },
-    k8s_fleet::{FleetFile, FleetPlan, NodeRole, NodeSpec},
+    fleet::{FleetFile, FleetPlan, NodeRole, NodeSpec},
 };
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
+use exedev_core::{API_KEY_ENV, client::ExeDevClient, shell};
 use rand::{Rng, distr::Alphanumeric};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -101,7 +100,7 @@ async fn run_destroy(endpoint: &str, yes: bool, cmd: DestroyCmd) -> Result<()> {
     confirm("Delete these exe.dev VMs?", yes)?;
     let client = exe_client(endpoint)?;
     for node in managed {
-        let command = command::shell_join(&["rm".into(), node.name.clone()]);
+        let command = shell::shell_join(&["rm".into(), node.name.clone()]);
         println!("exe.dev: {command}");
         client.exec(&command).await?;
     }
@@ -411,6 +410,8 @@ fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
     Ok(())
 }
 
@@ -463,9 +464,9 @@ async fn ensure_tool(tool: &str) -> Result<()> {
         .stderr(Stdio::null())
         .status()
         .await
-        .with_context(|| format!("required tool `{tool}` was not found in PATH"))?;
+        .with_context(|| format!("failed to check for tool `{tool}`"))?;
     if !status.success() {
-        bail!("required tool `{tool}` exists but did not run successfully");
+        bail!("required tool `{tool}` was not found in PATH");
     }
     Ok(())
 }
@@ -505,7 +506,7 @@ async fn capture_command(program: &str, args: &[&str]) -> Result<String> {
 }
 
 fn exe_new_command(node: &NodeSpec) -> String {
-    command::shell_join(&[
+    shell::shell_join(&[
         "new".into(),
         "--name".into(),
         node.name.clone(),
@@ -519,7 +520,7 @@ fn display_command(program: &str, args: &[&str]) -> String {
     let words = std::iter::once(program.to_string())
         .chain(args.iter().map(|arg| (*arg).to_string()))
         .collect::<Vec<_>>();
-    command::shell_join(&words)
+    shell::shell_join(&words)
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -690,8 +691,8 @@ fn parse_kubernetes_nodes(response: &str) -> Result<BTreeMap<String, KubernetesN
 
 #[cfg(test)]
 mod tests {
+    use super::super::fleet::NodeSpec;
     use super::*;
-    use crate::k8s_fleet::NodeSpec;
 
     #[test]
     fn parses_vm_names_from_json_array() {

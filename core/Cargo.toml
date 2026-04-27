@@ -1,0 +1,12 @@
+[package]
+name = "exedev-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dialoguer.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
