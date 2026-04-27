@@ -587,7 +587,11 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_vm_names_from_json(item, names);
+                if let Some(name) = item.as_str() {
+                    names.insert(name.to_string());
+                } else {
+                    collect_vm_names_from_json(item, names);
+                }
             }
         }
         Value::Object(object) => {
@@ -602,9 +606,6 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
                     collect_vm_names_from_json(child, names);
                 }
             }
-        }
-        Value::String(name) => {
-            names.insert(name.to_string());
         }
         _ => {}
     }
@@ -696,9 +697,19 @@ mod tests {
 
     #[test]
     fn parses_vm_names_from_json_array() {
-        let names = parse_vm_names(r#"[{"name":"a"},{"vmName":"b"}]"#).unwrap();
+        let names = parse_vm_names(r#"[{"name":"a"},{"vmName":"b"},"c"]"#).unwrap();
         assert!(names.contains("a"));
         assert!(names.contains("b"));
+        assert!(names.contains("c"));
+    }
+
+    #[test]
+    fn ignores_standalone_json_strings_in_objects() {
+        let names =
+            parse_vm_names(r#"{"status":"running","message":"ready","items":[{"name":"vm1"}]}"#)
+                .unwrap();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("vm1"));
     }
 
     #[test]
