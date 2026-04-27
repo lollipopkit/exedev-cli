@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use exedev_core::DEFAULT_ENDPOINT;
 
 #[derive(Debug, Parser)]
-#[command(name = "exedevctl")]
+#[command(name = "exedev-ctl")]
 #[command(about = "Rust CLI for exe.dev over HTTPS /exec")]
 #[command(version)]
 #[command(disable_help_subcommand = true)]

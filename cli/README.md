@@ -1,8 +1,8 @@
-# exedevctl
+# exedev-ctl
 
 [中文](README.zh-CN.md)
 
-`exedevctl` is the Rust exe.dev CLI included in this workspace.
+`exedev-ctl` is the Rust exe.dev CLI included in this workspace.
 
 It calls exe.dev through the official HTTPS API by default:
 
@@ -16,28 +16,36 @@ The request body is the native exe.dev command, equivalent to
 ## Build
 
 ```sh
-cargo build -p exedevctl
+cargo build -p exedev-ctl
 ```
 
 Run from Cargo:
 
 ```sh
-cargo run -p exedevctl -- --help
+cargo run -p exedev-ctl -- --help
 ```
 
 Or use the binary directly:
 
 ```sh
-./target/debug/exedevctl --help
+./target/debug/exedev-ctl --help
 ```
 
 ## Authentication
 
-`exedevctl` reads `EXE_DEV_API_KEY`:
+`exedev-ctl` reads `EXE_DEV_API_KEY`:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
 ```
+
+It also loads `.env` automatically:
+
+```dotenv
+EXE_DEV_API_KEY=exe0....
+```
+
+Values already present in the shell environment take precedence over `.env`.
 
 See [`../docs/exedev-automation.md`](../docs/exedev-automation.md) for token
 generation.
@@ -47,43 +55,43 @@ generation.
 List VMs:
 
 ```sh
-exedevctl ls
+exedev-ctl ls
 ```
 
 Create a VM:
 
 ```sh
-exedevctl new --name p1-a-1 --image ubuntu:22.04 --no-email
+exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
 ```
 
 Delete a VM:
 
 ```sh
-exedevctl rm p1-a-1
+exedev-ctl rm p1-a-1
 ```
 
 Skip confirmation for dangerous operations:
 
 ```sh
-exedevctl --yes rm p1-a-1
+exedev-ctl --yes rm p1-a-1
 ```
 
 Set the HTTP proxy port:
 
 ```sh
-exedevctl share port p1-a-1 8080
+exedev-ctl share port p1-a-1 8080
 ```
 
 Make the HTTP proxy public:
 
 ```sh
-exedevctl share set-public p1-a-1
+exedev-ctl share set-public p1-a-1
 ```
 
 Run a raw exe.dev command:
 
 ```sh
-exedevctl exec -- 'whoami'
+exedev-ctl exec -- 'whoami'
 ```
 
 ## Output
@@ -93,7 +101,7 @@ The default output is optimized for humans.
 Use `--json` to print raw JSON:
 
 ```sh
-exedevctl --json ls
+exedev-ctl --json ls
 ```
 
 ## SSH Fallback
@@ -107,9 +115,9 @@ ssh exe.dev ...
 
 Current fallback cases:
 
-- `exedevctl ssh ...`
-- `exedevctl new --prompt /dev/stdin`
-- `exedevctl new --setup-script /dev/stdin`
+- `exedev-ctl ssh ...`
+- `exedev-ctl new --prompt /dev/stdin`
+- `exedev-ctl new --setup-script /dev/stdin`
 
 These commands require local SSH access to exe.dev.
 

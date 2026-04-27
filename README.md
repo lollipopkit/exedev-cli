@@ -3,32 +3,35 @@
 [中文](README.zh-CN.md)
 
 This workspace provides two operator CLIs for managing exe.dev VMs and a small
-Kubernetes fleet. 
+Kubernetes fleet.
 
-## exedevctl
+## exedev-ctl
 
-`exedevctl` is the exe.dev VM management CLI. It calls the exe.dev HTTPS command
+`exedev-ctl` is the exe.dev VM management CLI. It calls the exe.dev HTTPS command
 API, with SSH fallback for interactive commands.
 
 Build it:
 
 ```sh
-cargo build -p exedevctl
+cargo build -p exedev-ctl
 ```
 
 Set the API token and list VMs:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
-./target/debug/exedevctl ls
+./target/debug/exedev-ctl ls
 ```
+
+Both CLIs also load environment variables from `.env` automatically. Existing
+shell environment variables take precedence.
 
 Common operations:
 
 ```sh
-exedevctl new --name p1-a-1 --image ubuntu:22.04 --no-email
-exedevctl share port p1-a-1 8080
-exedevctl rm p1-a-1
+exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
+exedev-ctl share port p1-a-1 8080
+exedev-ctl rm p1-a-1
 ```
 
 Dangerous operations such as `rm`, public share changes, and support-root grants
@@ -36,7 +39,7 @@ ask for confirmation by default. Use `--yes` only in reviewed automation.
 
 Detailed documentation:
 
-- [`cli/README.md`](cli/README.md): `exedevctl` build, auth, output, fallback,
+- [`cli/README.md`](cli/README.md): `exedev-ctl` build, auth, output, fallback,
   and command coverage.
 - [`docs/exedev-automation.md`](docs/exedev-automation.md): exe.dev HTTPS
   `POST /exec`, token generation, and automation boundaries.

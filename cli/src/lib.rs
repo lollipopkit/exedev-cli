@@ -9,6 +9,7 @@ use exedev_core::{API_KEY_ENV, client::ExeDevClient, shell};
 use std::env;
 
 pub async fn run() -> Result<()> {
+    exedev_core::env::load_dotenv()?;
     let cli = cli::Cli::parse();
     run_cli(cli).await
 }
@@ -18,7 +19,7 @@ async fn run_cli(cli: cli::Cli) -> Result<()> {
     let command_string = shell::shell_join(&built.words);
 
     if command_string == "exit" {
-        println!("exit is only meaningful in the ssh exe.dev REPL; exedevctl is exiting.");
+        println!("exit is only meaningful in the ssh exe.dev REPL; exedev-ctl is exiting.");
         return Ok(());
     }
 

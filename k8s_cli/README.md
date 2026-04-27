@@ -36,8 +36,18 @@ Environment variables:
 - `K3S_URL`: required for `--mode existing`, for example
   `https://100.64.0.10:6443`.
 
-Secrets should stay in environment variables or `.exedev-k8s/`; do not commit
-them into `fleet.yaml`.
+The CLI loads `.env` automatically, without overriding values already present
+in the shell environment:
+
+```dotenv
+EXE_DEV_API_KEY=exe0....
+TS_AUTHKEY=tskey-auth-...
+K3S_URL=https://100.64.0.10:6443
+K3S_TOKEN=...
+```
+
+Secrets should stay in environment variables, `.env`, or `.exedev-k8s/`; do not
+commit them into `fleet.yaml`.
 
 ## Fleet File
 

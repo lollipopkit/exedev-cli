@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn builds_new_command() {
         let built = command_from(&[
-            "exedevctl",
+            "exedev-ctl",
             "new",
             "--name",
             "p1-a-1",
@@ -327,14 +327,14 @@ mod tests {
 
     #[test]
     fn new_stdin_prompt_uses_ssh_fallback() {
-        let built = command_from(&["exedevctl", "new", "--prompt", "/dev/stdin"]);
+        let built = command_from(&["exedev-ctl", "new", "--prompt", "/dev/stdin"]);
         assert!(built.fallback_ssh);
     }
 
     #[test]
     fn builds_share_command() {
         let built = command_from(&[
-            "exedevctl",
+            "exedev-ctl",
             "share",
             "add",
             "mybox",
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn builds_raw_exec_command() {
-        let built = command_from(&["exedevctl", "exec", "--", "whoami"]);
+        let built = command_from(&["exedev-ctl", "exec", "--", "whoami"]);
         assert_eq!(shell_join(&built.words), "whoami");
     }
 }

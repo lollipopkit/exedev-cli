@@ -33,7 +33,16 @@ cargo build -p exedev-k8s
   `--mode existing` 时必需。
 - `K3S_URL`: `--mode existing` 时必需，例如 `https://100.64.0.10:6443`。
 
-secrets 应保存在环境变量或 `.exedev-k8s/` 中；不要提交到 `fleet.yaml`。
+CLI 会自动加载 `.env`，且不会覆盖 shell 环境中已经存在的变量：
+
+```dotenv
+EXE_DEV_API_KEY=exe0....
+TS_AUTHKEY=tskey-auth-...
+K3S_URL=https://100.64.0.10:6443
+K3S_TOKEN=...
+```
+
+secrets 应保存在环境变量、`.env` 或 `.exedev-k8s/` 中；不要提交到 `fleet.yaml`。
 
 ## Fleet File
 

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod env;
 pub mod shell;
 
 pub const DEFAULT_ENDPOINT: &str = "https://exe.dev/exec";

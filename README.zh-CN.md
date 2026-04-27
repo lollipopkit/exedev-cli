@@ -5,30 +5,32 @@
 本 workspace 提供两个面向 operators 的 CLI，用于管理 exe.dev VMs 和小型
 Kubernetes fleet。
 
-## exedevctl
+## exedev-ctl
 
-`exedevctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
+`exedev-ctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
 对交互式命令使用 SSH fallback。
 
 构建：
 
 ```sh
-cargo build -p exedevctl
+cargo build -p exedev-ctl
 ```
 
 设置 API token 并列出 VMs：
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
-./target/debug/exedevctl ls
+./target/debug/exedev-ctl ls
 ```
+
+两个 CLI 都会自动从 `.env` 读取环境变量。shell 里已经设置的环境变量优先。
 
 常用操作：
 
 ```sh
-exedevctl new --name p1-a-1 --image ubuntu:22.04 --no-email
-exedevctl share port p1-a-1 8080
-exedevctl rm p1-a-1
+exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
+exedev-ctl share port p1-a-1 8080
+exedev-ctl rm p1-a-1
 ```
 
 `rm`、public share 变更、support-root grant 等危险操作默认需要确认。只有在
@@ -36,7 +38,7 @@ automation 已经审阅过 action plan 后才使用 `--yes`。
 
 详细文档：
 
-- [`cli/README.zh-CN.md`](cli/README.zh-CN.md)：`exedevctl` build、auth、output、
+- [`cli/README.zh-CN.md`](cli/README.zh-CN.md)：`exedev-ctl` build、auth、output、
   fallback 和 command coverage。
 - [`docs/exedev-automation.md`](docs/exedev-automation.md)：exe.dev HTTPS
   `POST /exec`、token generation 和 automation boundary。
