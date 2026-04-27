@@ -1,6 +1,8 @@
 # exedevctl
 
-`exedevctl` is the Rust exe.dev CLI included in this repository.
+[中文](README.zh-CN.md)
+
+`exedevctl` is the Rust exe.dev CLI included in this workspace.
 
 It calls exe.dev through the official HTTPS API by default:
 
@@ -31,13 +33,14 @@ Or use the binary directly:
 
 ## Authentication
 
-The first version only reads `EXE_DEV_API_KEY`:
+`exedevctl` reads `EXE_DEV_API_KEY`:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
 ```
 
-See [`docs/exedev-automation.md`](exedev-automation.md) for token generation.
+See [`../docs/exedev-automation.md`](../docs/exedev-automation.md) for token
+generation.
 
 ## Common Commands
 
@@ -108,11 +111,11 @@ Current fallback cases:
 - `exedevctl new --prompt /dev/stdin`
 - `exedevctl new --setup-script /dev/stdin`
 
-These commands require local SSH access to exe.dev to work.
+These commands require local SSH access to exe.dev.
 
 ## Coverage
 
-The first version covers the top-level commands from the exe.dev CLI Reference:
+The CLI covers the top-level commands from the exe.dev CLI Reference:
 
 ```text
 help doc ls new rm restart rename tag stat cp resize share team whoami

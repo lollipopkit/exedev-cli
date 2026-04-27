@@ -214,4 +214,4 @@ scripts/exedev-label-nodes
 VM deletion must require separate confirmation to avoid accidental disk loss.
 
 The Rust `exedev-k8s` binary now covers the first integrated version of this
-flow for k3s fleets. See [`docs/exedev-k8s.md`](exedev-k8s.md).
+flow for k3s fleets. See [`../k8s_cli/README.md`](../k8s_cli/README.md).

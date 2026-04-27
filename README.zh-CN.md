@@ -1,125 +1,79 @@
-# exe.dev Kubernetes Fleet
+# exe.dev ctl
 
 [English](README.md)
 
-本仓库用于管理 exe.dev VMs 和一个小型 Kubernetes fleet。它把 VM 分配显式化，
-让 operators 可以先把 project/task 映射到可预测的 node pools，再调度 workloads。
+本 workspace 提供两个面向 operators 的 CLI，用于管理 exe.dev VMs 和小型
+Kubernetes fleet。
 
-## Quick Start
+## exedevctl
 
-构建仓库内置的 `exedevctl` CLI：
+`exedevctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
+对交互式命令使用 SSH fallback。
+
+构建：
 
 ```sh
 cargo build -p exedevctl
 ```
 
-设置 exe.dev API token：
+设置 API token 并列出 VMs：
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
-```
-
-列出现有 VMs：
-
-```sh
 ./target/debug/exedevctl ls
 ```
 
-token 生成方式和底层 HTTPS API 见
-[`docs/exedev-automation.md`](docs/exedev-automation.md)。
-
-## Fleet Model
-
-[`fleet.example.yaml`](fleet.example.yaml) 是 fleet layout 的 source of truth 示例。
-它描述：
-
-- control-plane pool
-- `project1/a`、`project2/b` 等 project/task worker pools
-- `p1-a` 等 VM naming prefixes
-- desired node counts 和 default workload replicas
-- 可选的 shared 或 ingress spare pools
-- 每个 pool 是否用 `NoSchedule` taint 隔离
-
-Kubernetes 不直接创建 exe.dev VMs。operators 先 provision VMs，把它们加入 k3s，
-再应用确定性的 labels 和可选 taints：
-
-```sh
-kubectl label node p1-a-1 exedev.dev/project=project1
-kubectl label node p1-a-1 exedev.dev/task=a
-kubectl label node p1-a-1 exedev.dev/pool=project1-a
-kubectl taint node p1-a-1 exedev.dev/pool=project1-a:NoSchedule
-```
-
-workloads 再通过 `nodeSelector`、tolerations 或 affinity 选择目标 pool。详细 label
-模式见 [`docs/node-labeling.md`](docs/node-labeling.md)。
-
-## Common Workflows
-
-列出 VMs：
-
-```sh
-exedevctl ls
-```
-
-创建 VM：
+常用操作：
 
 ```sh
 exedevctl new --name p1-a-1 --image ubuntu:22.04 --no-email
-```
-
-删除 VM：
-
-```sh
+exedevctl share port p1-a-1 8080
 exedevctl rm p1-a-1
 ```
 
-设置 HTTP proxy port：
+`rm`、public share 变更、support-root grant 等危险操作默认需要确认。只有在
+automation 已经审阅过 action plan 后才使用 `--yes`。
 
-```sh
-exedevctl share port p1-a-1 8080
-```
+详细文档：
 
-VM 加入 cluster 后应用 node labels：
+- [`cli/README.zh-CN.md`](cli/README.zh-CN.md)：`exedevctl` build、auth、output、
+  fallback 和 command coverage。
+- [`docs/exedev-automation.md`](docs/exedev-automation.md)：exe.dev HTTPS
+  `POST /exec`、token generation 和 automation boundary。
 
-```sh
-kubectl label node p1-a-1 exedev.dev/project=project1 exedev.dev/task=a exedev.dev/pool=project1-a
-```
+## exedev-k8s
 
-从 `fleet.yaml` 预览完整 k3s fleet bootstrap：
+`exedev-k8s` 是 Kubernetes fleet 管理 CLI。它读取 `fleet.yaml`，创建或复用
+exe.dev VMs，bootstrap Tailscale 和 k3s，给 nodes 打 labels/taints，并可用
+`kubectl apply -f` 部署 manifests。
+
+构建：
 
 ```sh
 cargo build -p exedev-k8s
+```
+
+预览 fleet plan：
+
+```sh
 exedev-k8s plan --fleet fleet.yaml --mode new
 ```
 
-bootstrap exe.dev VMs，安装 Tailscale/k3s，标记 nodes，并部署 manifests：
+bootstrap 新 k3s fleet：
 
 ```sh
+export EXE_DEV_API_KEY="exe0...."
 export TS_AUTHKEY="tskey-auth-..."
 exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
 ```
 
-完整 CLI 说明见 [`docs/exedevctl.md`](docs/exedevctl.md)。
-Kubernetes fleet CLI 说明见 [`docs/exedev-k8s.md`](docs/exedev-k8s.md)。
+fleet model 从 [`fleet.example.yaml`](fleet.example.yaml) 开始。project/task
+pools 会映射为确定性的 Kubernetes labels，例如 `exedev.dev/project`、
+`exedev.dev/task` 和 `exedev.dev/pool`；隔离 pool 还会设置 `NoSchedule` taint。
 
-## Safety Notes
+详细文档：
 
-危险操作默认需要确认，包括用 `rm` 删除 VMs、把 VM share 设为 public、授予
-exe.dev support root access，以及类似会暴露或销毁资源的命令。
-
-只有在 automation 已经打印或审阅 action plan 后才使用 `--yes`：
-
-```sh
-exedevctl --yes rm p1-a-1
-```
-
-## Documentation
-
-- [`docs/exedevctl.md`](docs/exedevctl.md)：CLI build、authentication、output、
-  fallback behavior 和支持的 exe.dev commands。
-- [`docs/exedev-k8s.md`](docs/exedev-k8s.md)：fleet planning、k3s bootstrap、
-  node labeling、workload deployment、status 和 destroy workflows。
-- [`docs/exedev-automation.md`](docs/exedev-automation.md)：HTTPS `POST /exec`、
-  API token generation、command automation 和未来 sync scripts。
+- [`k8s_cli/README.zh-CN.md`](k8s_cli/README.zh-CN.md)：planning、bootstrap、deployment、
+  status、destroy 和本地 secret files。
 - [`docs/node-labeling.md`](docs/node-labeling.md)：Kubernetes labels、taints、
   tolerations 和 pool isolation examples。

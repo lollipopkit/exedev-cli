@@ -2,129 +2,79 @@
 
 [中文](README.zh-CN.md)
 
-This repository manages exe.dev VMs and a small Kubernetes fleet. It keeps VM
-allocation explicit, so operators can map projects and tasks to predictable node
-pools before workloads are scheduled.
+This workspace provides two operator CLIs for managing exe.dev VMs and a small
+Kubernetes fleet. 
 
-## Quick Start
+## exedevctl
 
-Build the included `exedevctl` CLI:
+`exedevctl` is the exe.dev VM management CLI. It calls the exe.dev HTTPS command
+API, with SSH fallback for interactive commands.
+
+Build it:
 
 ```sh
 cargo build -p exedevctl
 ```
 
-Set an exe.dev API token:
+Set the API token and list VMs:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
-```
-
-List current VMs:
-
-```sh
 ./target/debug/exedevctl ls
 ```
 
-For token generation and the underlying HTTPS API, see
-[`docs/exedev-automation.md`](docs/exedev-automation.md).
-
-## Fleet Model
-
-[`fleet.example.yaml`](fleet.example.yaml) is the source-of-truth example for
-the fleet layout. It describes:
-
-- a control-plane pool
-- project/task worker pools such as `project1/a` and `project2/b`
-- VM naming prefixes such as `p1-a`
-- desired node counts and default workload replicas
-- optional shared or ingress spare pools
-- whether each pool should be isolated with a `NoSchedule` taint
-
-Kubernetes does not create exe.dev VMs directly. Operators provision VMs first,
-join them to k3s, then apply deterministic labels and optional taints:
-
-```sh
-kubectl label node p1-a-1 exedev.dev/project=project1
-kubectl label node p1-a-1 exedev.dev/task=a
-kubectl label node p1-a-1 exedev.dev/pool=project1-a
-kubectl taint node p1-a-1 exedev.dev/pool=project1-a:NoSchedule
-```
-
-Workloads then target the intended pool with `nodeSelector`, tolerations, or
-affinity. See [`docs/node-labeling.md`](docs/node-labeling.md) for the detailed
-labeling pattern.
-
-## Common Workflows
-
-List VMs:
-
-```sh
-exedevctl ls
-```
-
-Create a VM:
+Common operations:
 
 ```sh
 exedevctl new --name p1-a-1 --image ubuntu:22.04 --no-email
-```
-
-Delete a VM:
-
-```sh
+exedevctl share port p1-a-1 8080
 exedevctl rm p1-a-1
 ```
 
-Set the HTTP proxy port:
+Dangerous operations such as `rm`, public share changes, and support-root grants
+ask for confirmation by default. Use `--yes` only in reviewed automation.
 
-```sh
-exedevctl share port p1-a-1 8080
-```
+Detailed documentation:
 
-Apply node labels after the VM joins the cluster:
+- [`cli/README.md`](cli/README.md): `exedevctl` build, auth, output, fallback,
+  and command coverage.
+- [`docs/exedev-automation.md`](docs/exedev-automation.md): exe.dev HTTPS
+  `POST /exec`, token generation, and automation boundaries.
 
-```sh
-kubectl label node p1-a-1 exedev.dev/project=project1 exedev.dev/task=a exedev.dev/pool=project1-a
-```
+## exedev-k8s
 
-Preview a full k3s fleet bootstrap from `fleet.yaml`:
+`exedev-k8s` is the Kubernetes fleet management CLI. It reads `fleet.yaml`,
+creates or reuses exe.dev VMs, bootstraps Tailscale and k3s, labels and taints
+nodes, and can deploy manifests with `kubectl apply -f`.
+
+Build it:
 
 ```sh
 cargo build -p exedev-k8s
+```
+
+Preview a fleet plan:
+
+```sh
 exedev-k8s plan --fleet fleet.yaml --mode new
 ```
 
-Bootstrap exe.dev VMs, install Tailscale/k3s, label nodes, and deploy manifests:
+Bootstrap a new k3s fleet:
 
 ```sh
+export EXE_DEV_API_KEY="exe0...."
 export TS_AUTHKEY="tskey-auth-..."
 exedev-k8s bootstrap --fleet fleet.yaml --mode new --manifests k8s/examples
 ```
 
-For the full CLI surface, see [`docs/exedevctl.md`](docs/exedevctl.md).
-For the Kubernetes fleet CLI, see [`docs/exedev-k8s.md`](docs/exedev-k8s.md).
+The fleet model starts from [`fleet.example.yaml`](fleet.example.yaml). Project
+and task pools become deterministic Kubernetes labels such as
+`exedev.dev/project`, `exedev.dev/task`, and `exedev.dev/pool`; isolated pools
+also receive a `NoSchedule` taint.
 
-## Safety Notes
+Detailed documentation:
 
-Dangerous operations require confirmation by default. This includes deleting
-VMs with `rm`, making a VM share public, granting exe.dev support root access,
-and similar commands that can expose or destroy resources.
-
-Use `--yes` only in automation that has already printed or reviewed the action
-plan:
-
-```sh
-exedevctl --yes rm p1-a-1
-```
-
-## Documentation
-
-- [`docs/exedevctl.md`](docs/exedevctl.md): CLI build, authentication, output,
-  fallback behavior, and supported exe.dev commands.
-- [`docs/exedev-k8s.md`](docs/exedev-k8s.md): fleet planning, k3s bootstrap,
-  node labeling, workload deployment, status, and destroy workflows.
-- [`docs/exedev-automation.md`](docs/exedev-automation.md): HTTPS
-  `POST /exec`, API token generation, command automation, and future sync
-  scripts.
+- [`k8s_cli/README.md`](k8s_cli/README.md): planning, bootstrap, deployment,
+  status, destroy, and local secret files.
 - [`docs/node-labeling.md`](docs/node-labeling.md): Kubernetes labels, taints,
   tolerations, and pool isolation examples.

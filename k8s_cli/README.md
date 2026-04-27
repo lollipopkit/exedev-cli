@@ -1,6 +1,8 @@
 # exedev-k8s
 
-`exedev-k8s` is the Kubernetes fleet CLI for this repository. It reads
+[中文](README.zh-CN.md)
+
+`exedev-k8s` is the Kubernetes fleet CLI for this workspace. It reads
 `fleet.yaml`, creates the required exe.dev VMs, bootstraps Tailscale and k3s,
 applies Kubernetes node labels and taints, and can deploy manifests with
 `kubectl apply -f`.
@@ -39,8 +41,8 @@ them into `fleet.yaml`.
 
 ## Fleet File
 
-The CLI defaults to `fleet.yaml`. Use `fleet.example.yaml` as the starting
-point:
+The CLI defaults to `fleet.yaml`. Use [`../fleet.example.yaml`](../fleet.example.yaml)
+as the starting point:
 
 ```yaml
 defaults:
@@ -71,6 +73,9 @@ If the pool is isolated, it also applies:
 ```text
 exedev.dev/pool=project1-a:NoSchedule
 ```
+
+For the workload-side scheduling pattern, see
+[`../docs/node-labeling.md`](../docs/node-labeling.md).
 
 ## Commands
 
