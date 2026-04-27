@@ -1,0 +1,70 @@
+# Source of truth for exe.dev VM allocation.
+#
+# nodes = number of exe.dev VMs reserved for this project/task pool.
+# replicas = default Kubernetes Pod replica count for workloads in this pool.
+# isolated = whether to add a NoSchedule taint so only matching workloads run here.
+
+cluster:
+  name: exedev-main
+  controlPlane:
+    nodes: 1
+    vmPrefix: k8s-ctl
+  workerVmBudget: 19
+
+defaults:
+  network: tailscale
+  kubernetes: k3s
+  isolated: true
+
+projects:
+  project1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: p1-a
+      b:
+        nodes: 2
+        replicas: 2
+        vmPrefix: p1-b
+
+  project2:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: p2-a
+      b:
+        nodes: 5
+        replicas: 5
+        vmPrefix: p2-b
+      c:
+        nodes: 1
+        replicas: 1
+        vmPrefix: p2-c
+
+  project3:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: p3-a
+      b:
+        nodes: 2
+        replicas: 2
+        vmPrefix: p3-b
+
+sparePools:
+  shared:
+    nodes: 2
+    vmPrefix: shared
+    isolated: false
+    labels:
+      exedev.dev/purpose: shared
+
+  ingress:
+    nodes: 1
+    vmPrefix: ingress
+    isolated: true
+    labels:
+      exedev.dev/role: ingress

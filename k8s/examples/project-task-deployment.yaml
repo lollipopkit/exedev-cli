@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: project1-a
+  namespace: project1
+  labels:
+    # Application identity used by the selector to match Pods.
+    app.kubernetes.io/name: project1-a
+    # Marks the project this workload belongs to.
+    exedev.dev/project: project1
+    # Marks the task this workload belongs to within the project.
+    exedev.dev/task: a
+spec:
+  # Pod replica count for this workload, usually derived from fleet.yaml replicas.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: project1-a
+  template:
+    metadata:
+      labels:
+        # Pod labels must match selector.matchLabels above.
+        app.kubernetes.io/name: project1-a
+        exedev.dev/project: project1
+        exedev.dev/task: a
+    spec:
+      # Only schedule onto the node pool for project1/a.
+      nodeSelector:
+        exedev.dev/project: project1
+        exedev.dev/task: a
+      # If the node pool has a NoSchedule taint, the Pod must declare this toleration.
+      tolerations:
+        - key: exedev.dev/pool
+          operator: Equal
+          value: project1-a
+          effect: NoSchedule
+      containers:
+        - name: app
+          # Example image; replace it with the real application image.
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
