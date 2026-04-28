@@ -36,6 +36,14 @@ Environment variables:
 - `K3S_URL`: required for `--mode existing`, for example
   `https://100.64.0.10:6443`.
 
+Use the exe.dev `exeuntu` image for k3s nodes. Generic minimal images such as
+`ubuntu:22.04` may lack `sudo`, `curl`, or a process supervisor such as
+systemd/openrc.
+
+If Tailnet Lock is enabled and a new VM is locked out, `bootstrap` pauses before
+installing k3s and prints the `tailscale lock sign ...` command. Run that command
+on a trusted signing node, then rerun `exedev-k8s bootstrap`.
+
 The CLI loads `.env` automatically, without overriding values already present
 in the shell environment:
 
@@ -58,7 +66,7 @@ as the starting point:
 defaults:
   network: tailscale
   kubernetes: k3s
-  image: ubuntu:22.04
+  image: exeuntu
   isolated: true
 ```
 
@@ -134,15 +142,70 @@ exedev-k8s status --fleet fleet.yaml --kubeconfig .exedev-k8s/exedev-main/kubeco
 Delete fleet-managed VMs:
 
 ```sh
-exedev-k8s destroy --fleet fleet.yaml --yes
+exedev-k8s destroy --fleet fleet.yaml
 ```
 
 `destroy` is separate from `bootstrap`; bootstrap never deletes extra VMs.
 
+## Manual Test Fleets
+
+Small test fleets live in [`test-fleets/`](test-fleets/). The recommended flow
+is to run `01-minimal-new.yaml` first to create a base cluster, then use
+`02-existing-workers.yaml` to join extra workers to that cluster.
+
+Create fleet 1:
+
+```sh
+exedev-k8s bootstrap \
+  --fleet k8s_cli/test-fleets/01-minimal-new.yaml \
+  --mode new
+```
+
+Fleet 1 stores its kubeconfig and token under:
+
+```text
+.exedev-k8s/exedev-test-minimal/kubeconfig
+.exedev-k8s/exedev-test-minimal/k3s-token
+```
+
+Test fleet 2 on top of fleet 1:
+
+```sh
+export K3S_URL="$(kubectl --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+export K3S_TOKEN="$(cat .exedev-k8s/exedev-test-minimal/k3s-token)"
+
+exedev-k8s bootstrap \
+  --fleet k8s_cli/test-fleets/02-existing-workers.yaml \
+  --mode existing \
+  --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig
+```
+
+Always pass the target cluster with `--kubeconfig` in `--mode existing`.
+Otherwise `kubectl` uses the default config, which can make `/readyz` return
+`NotFound` or apply labels/taints to the wrong cluster.
+
+If Tailnet Lock pauses bootstrap, run the printed `tailscale lock sign ...`
+command on a trusted signing node, then rerun the same `bootstrap` command. Any
+already-created VMs are reused.
+
+Check that fleet 2 joined fleet 1:
+
+```sh
+exedev-k8s status \
+  --fleet k8s_cli/test-fleets/02-existing-workers.yaml \
+  --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig
+
+kubectl --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig get nodes -o wide
+```
+
+Expected result: `test-ex-p1-a-1` and `test-ex-p2-b-1` are `Ready`, and
+`status` reports `labels=ok taint=ok`.
+
 ## Safety
 
-`plan` is read-only. `bootstrap` and `destroy` print the planned actions and ask
-for confirmation unless `--yes` is passed.
+`plan` is read-only. `bootstrap` prints the planned actions and asks for
+confirmation unless `--yes` is passed. `destroy` always asks for confirmation,
+even when global `--yes` is present.
 
 `bootstrap` creates missing VMs, installs Tailscale and k3s through local
 `ssh exe.dev ssh <vm> ...`, applies labels and taints with `kubectl`, and

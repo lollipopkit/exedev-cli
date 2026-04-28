@@ -10,7 +10,11 @@ pub(crate) struct K8sCli {
     #[arg(long, global = true, default_value = DEFAULT_ENDPOINT)]
     pub(crate) endpoint: String,
 
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Skip non-destroy confirmations; destroy always confirms"
+    )]
     pub(crate) yes: bool,
 
     #[command(subcommand)]
@@ -77,6 +81,9 @@ pub(crate) struct StatusCmd {
 pub(crate) struct DestroyCmd {
     #[arg(long, default_value = "fleet.yaml")]
     pub(crate) fleet: PathBuf,
+    /// Try deleting every VM name defined by the fleet, even if exe.dev ls does not report it.
+    #[arg(long)]
+    pub(crate) all_planned: bool,
 }
 
 #[cfg(test)]

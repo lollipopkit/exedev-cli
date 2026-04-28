@@ -10,12 +10,6 @@ Kubernetes fleet。
 `exedev-ctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
 对交互式命令使用 SSH fallback。
 
-构建：
-
-```sh
-cargo build -p exedev-ctl
-```
-
 设置 API token 并列出 VMs：
 
 ```sh
@@ -50,11 +44,7 @@ automation 已经审阅过 action plan 后才使用 `--yes`。
 exe.dev VMs，bootstrap Tailscale 和 k3s，给 nodes 打 labels/taints，并可用
 `kubectl apply -f` 部署 manifests。
 
-构建：
-
-```sh
-cargo build -p exedev-k8s
-```
+![k8s-cli](docs/media/k8s-cli.png)
 
 预览 fleet plan：
 

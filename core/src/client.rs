@@ -3,9 +3,23 @@ use reqwest::StatusCode;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-enum ApiError {
+pub enum ExeDevApiError {
     #[error("exe.dev returned HTTP {status}: {body}")]
     Http { status: StatusCode, body: String },
+}
+
+impl ExeDevApiError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::Http { status, .. } => *status,
+        }
+    }
+
+    pub fn body(&self) -> &str {
+        match self {
+            Self::Http { body, .. } => body,
+        }
+    }
 }
 
 pub struct ExeDevClient {
@@ -33,9 +47,12 @@ impl ExeDevClient {
             .await
             .context("request to exe.dev /exec failed")?;
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = response
+            .text()
+            .await
+            .context("failed to read exe.dev response body")?;
         if !status.is_success() {
-            return Err(ApiError::Http { status, body }.into());
+            return Err(ExeDevApiError::Http { status, body }.into());
         }
         Ok(body)
     }

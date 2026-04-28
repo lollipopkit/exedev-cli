@@ -1,0 +1,51 @@
+# Labels, taints, and spare pool behavior test.
+#
+# Expected VMs in --mode new:
+# - test-mix-ctl-1
+# - test-iso-a-1
+# - test-iso-b-1
+# - test-shared-1
+#
+# Expected taints:
+# - test-iso-a-1: exedev.dev/pool=project1-a:NoSchedule
+# - test-iso-b-1: no taint because isolated: false
+# - test-shared-1: no taint because isolated: false
+
+cluster:
+  name: exedev-test-mixed
+  controlPlane:
+    nodes: 1
+    vmPrefix: test-mix-ctl
+  workerVmBudget: 3
+
+defaults:
+  network: tailscale
+  kubernetes: k3s
+  image: exeuntu
+  isolated: true
+
+projects:
+  project1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: test-iso-a
+        labels:
+          exedev.dev/test-case: isolated
+      b:
+        nodes: 1
+        replicas: 1
+        vmPrefix: test-iso-b
+        isolated: false
+        labels:
+          exedev.dev/test-case: untainted
+
+sparePools:
+  shared:
+    nodes: 1
+    vmPrefix: test-shared
+    isolated: false
+    labels:
+      exedev.dev/purpose: shared
+      exedev.dev/test-case: spare

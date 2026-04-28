@@ -10,12 +10,6 @@ Kubernetes fleet.
 `exedev-ctl` is the exe.dev VM management CLI. It calls the exe.dev HTTPS command
 API, with SSH fallback for interactive commands.
 
-Build it:
-
-```sh
-cargo build -p exedev-ctl
-```
-
 Set the API token and list VMs:
 
 ```sh
@@ -51,11 +45,7 @@ Detailed documentation:
 creates or reuses exe.dev VMs, bootstraps Tailscale and k3s, labels and taints
 nodes, and can deploy manifests with `kubectl apply -f`.
 
-Build it:
-
-```sh
-cargo build -p exedev-k8s
-```
+![k8s-cli](docs/media/k8s-cli.png)
 
 Preview a fleet plan:
 

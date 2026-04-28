@@ -1,0 +1,38 @@
+# Existing-cluster worker join test.
+#
+# Use with:
+#   exedev-k8s bootstrap --fleet k8s_cli/test-fleets/02-existing-workers.yaml --mode existing --kubeconfig ./kubeconfig
+#
+# Expected VMs in --mode existing:
+# - test-ex-p1-a-1
+# - test-ex-p2-b-1
+
+cluster:
+  name: exedev-test-existing
+  controlPlane:
+    nodes: 1
+    vmPrefix: ignored-existing-ctl
+  workerVmBudget: 2
+
+defaults:
+  network: tailscale
+  kubernetes: k3s
+  image: exeuntu
+  isolated: true
+
+projects:
+  project1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: test-ex-p1-a
+
+  project2:
+    tasks:
+      b:
+        nodes: 1
+        replicas: 1
+        vmPrefix: test-ex-p2-b
+        labels:
+          exedev.dev/test-case: existing-workers

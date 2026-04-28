@@ -14,7 +14,7 @@ cluster:
 defaults:
   network: tailscale
   kubernetes: k3s
-  image: ubuntu:22.04
+  image: exeuntu
   isolated: true
 
 projects:

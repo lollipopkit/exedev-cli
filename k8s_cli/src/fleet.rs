@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 
-const DEFAULT_IMAGE: &str = "ubuntu:22.04";
+const DEFAULT_IMAGE: &str = "exeuntu";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

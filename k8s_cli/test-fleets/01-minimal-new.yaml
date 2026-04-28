@@ -1,0 +1,26 @@
+# Smallest end-to-end new-cluster test.
+#
+# Expected VMs in --mode new:
+# - test-min-ctl-1
+# - test-p1-a-1
+
+cluster:
+  name: exedev-test-minimal
+  controlPlane:
+    nodes: 1
+    vmPrefix: test-min-ctl
+  workerVmBudget: 1
+
+defaults:
+  network: tailscale
+  kubernetes: k3s
+  image: exeuntu
+  isolated: true
+
+projects:
+  project1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: test-p1-a
