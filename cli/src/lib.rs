@@ -5,7 +5,7 @@ mod ssh;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use exedev_core::{API_KEY_ENV, client::ExeDevClient, shell};
+use exedev_core::{API_KEY_ENV, client::ExeDevClient, shell, terminal};
 use std::env;
 
 pub async fn run() -> Result<()> {
@@ -19,7 +19,12 @@ async fn run_cli(cli: cli::Cli) -> Result<()> {
     let command_string = shell::shell_join(&built.words);
 
     if command_string == "exit" {
-        println!("exit is only meaningful in the ssh exe.dev REPL; exedev-ctl is exiting.");
+        println!(
+            "{}",
+            terminal::muted(
+                "exit is only meaningful in the ssh exe.dev REPL; exedev-ctl is exiting."
+            )
+        );
         return Ok(());
     }
 

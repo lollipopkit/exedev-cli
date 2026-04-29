@@ -1,4 +1,4 @@
-# exe.dev ctl
+# exe.dev cli
 
 [中文](README.zh-CN.md)
 
@@ -15,7 +15,7 @@ Set the API token and list VMs:
 ```sh
 # You can create one from https://exe.dev/user
 export EXE_DEV_API_KEY="exe0...."
-./target/debug/exedev-ctl ls
+exedev-ctl ls
 ```
 
 Both CLIs also load environment variables from `.env` automatically. Existing

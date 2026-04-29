@@ -11,7 +11,7 @@ repository = "https://github.com/local/exedev-cli"
 [workspace.dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
-comfy-table = { version = "7.2", default-features = false }
+comfy-table = { version = "7.2", default-features = false, features = ["tty"] }
 dialoguer = { version = "0.12", default-features = false }
 dotenvy = "0.15"
 exedev-core = { path = "core" }

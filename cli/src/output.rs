@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
-use comfy_table::{Cell, Table, presets::UTF8_FULL};
+use comfy_table::{Attribute, Cell, Color, Table, presets::UTF8_FULL};
+use exedev_core::terminal;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -22,7 +23,7 @@ pub(crate) fn print_response(response: &str, json: bool) -> Result<()> {
     if let Some(value) = parsed {
         print_human_json(&value)?;
     } else {
-        println!("{trimmed}");
+        print_plain_text(trimmed);
     }
     Ok(())
 }
@@ -30,7 +31,7 @@ pub(crate) fn print_response(response: &str, json: bool) -> Result<()> {
 fn print_human_json(value: &Value) -> Result<()> {
     if let Some(output) = value.get("output").and_then(Value::as_str) {
         if !output.trim().is_empty() {
-            println!("{}", output.trim_end());
+            print_plain_text(output.trim_end());
             return Ok(());
         }
     }
@@ -43,11 +44,11 @@ fn print_human_json(value: &Value) -> Result<()> {
     match value {
         Value::Array(items) if items.iter().all(Value::is_object) => print_table(items),
         Value::Object(_) => {
-            println!("{}", serde_json::to_string_pretty(value)?);
+            println!("{}", terminal::label(serde_json::to_string_pretty(value)?));
             Ok(())
         }
         _ => {
-            println!("{value}");
+            println!("{}", terminal::label(value));
             Ok(())
         }
     }
@@ -55,7 +56,7 @@ fn print_human_json(value: &Value) -> Result<()> {
 
 fn print_table(items: &[Value]) -> Result<()> {
     if items.is_empty() {
-        println!("[]");
+        println!("{}", terminal::muted("[]"));
         return Ok(());
     }
 
@@ -71,7 +72,7 @@ fn print_table(items: &[Value]) -> Result<()> {
     let columns = columns.into_iter().collect::<Vec<_>>();
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(columns.iter().map(Cell::new));
+    table.set_header(columns.iter().map(|column| styled_header_cell(column)));
     for item in items {
         let object = item
             .as_object()
@@ -81,7 +82,7 @@ fn print_table(items: &[Value]) -> Result<()> {
                 .get(column)
                 .map(format_json_cell)
                 .unwrap_or_else(String::new);
-            Cell::new(text)
+            styled_value_cell(column, text)
         });
         table.add_row(row);
     }
@@ -97,6 +98,57 @@ fn format_json_cell(value: &Value) -> String {
         Value::String(value) => value.clone(),
         _ => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
     }
+}
+
+fn print_plain_text(text: &str) {
+    for line in text.lines() {
+        if line.starts_with("error:") || line.starts_with("Error:") {
+            eprintln!("{}", terminal::error(line));
+        } else if line.starts_with("warning:") || line.starts_with("Warning:") {
+            println!("{}", terminal::warn(line));
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
+fn styled_header_cell(column: &str) -> Cell {
+    let cell = Cell::new(column);
+    if terminal::stdout_color_enabled() {
+        cell.fg(Color::Cyan).add_attribute(Attribute::Bold)
+    } else {
+        cell
+    }
+}
+
+fn styled_value_cell(column: &str, text: String) -> Cell {
+    let cell = Cell::new(text.clone());
+    if !terminal::stdout_color_enabled() {
+        return cell;
+    }
+    if is_name_column(column) {
+        return cell.fg(Color::Magenta);
+    }
+    if is_status_column(column) {
+        return match text.as_str() {
+            "running" | "ready" | "active" | "ok" | "success" | "present" => cell.fg(Color::Green),
+            "stopped" | "missing" | "inactive" | "pending" | "unknown" => cell.fg(Color::Yellow),
+            "failed" | "error" | "unavailable" => cell.fg(Color::Red),
+            _ => cell,
+        };
+    }
+    cell
+}
+
+fn is_name_column(column: &str) -> bool {
+    matches!(
+        column,
+        "name" | "vm_name" | "vmName" | "ssh_dest" | "sshDest"
+    )
+}
+
+fn is_status_column(column: &str) -> bool {
+    matches!(column, "status" | "state" | "ready")
 }
 
 #[cfg(test)]
