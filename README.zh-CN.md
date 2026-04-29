@@ -5,6 +5,14 @@
 本 workspace 提供两个面向 operators 的 CLI，用于管理 exe.dev VMs 和小型
 Kubernetes fleet。
 
+## Skill
+
+安装 `exedev-ctl` skill：
+
+```sh
+npx skills add https://github.com/lollipopkit/exedev-cli
+```
+
 ## exedev-ctl
 
 `exedev-ctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
