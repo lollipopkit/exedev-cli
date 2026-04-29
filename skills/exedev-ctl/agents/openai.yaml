@@ -1,0 +1,4 @@
+interface:
+  display_name: "exedev-ctl VM Ops"
+  short_description: "Manage exe.dev VMs with exedev-ctl"
+  default_prompt: "Use $exedev-ctl to manage exe.dev VMs."
