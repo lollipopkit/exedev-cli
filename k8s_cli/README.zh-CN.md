@@ -23,6 +23,7 @@ cargo build -p exedev-k8s
 本地工具：
 
 - `ssh`
+- `scp`
 - `kubectl`
 
 环境变量：
@@ -201,8 +202,10 @@ kubectl --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig get nodes -o wid
 `plan` 是 read-only。`bootstrap` 会打印 planned actions，并在没有传入 `--yes`
 时请求确认。`destroy` 始终需要确认，即使传入全局 `--yes`。
 
-`bootstrap` 会创建缺失 VMs，通过本地 `ssh exe.dev ssh <vm> ...` 安装 Tailscale
-和 k3s，用 `kubectl` 应用 labels/taints，并可选运行 `kubectl apply -f <dir>`。
+`bootstrap` 会创建缺失 VMs，通过 `scp` 上传 `k8s_cli/scripts/`，再用交互式
+`ssh -tt` 执行 node bootstrap Bash 脚本；随后用 `kubectl` 应用
+labels/taints，并可选运行 `kubectl apply -f <dir>`。如果目录内有
+`kustomization.yaml`，会改用 `kubectl apply -k <dir>`。
 
 新 cluster 生成的 kubeconfig 和 k3s token 会保存到：
 

@@ -1,0 +1,37 @@
+# Seven-node PostgreSQL fleet:
+# - 3 k3s server nodes for HA embedded etcd
+# - 3 isolated PostgreSQL data workers
+# - 1 shared Tailnet/ops worker for PgBouncer and access helpers
+
+cluster:
+  name: exedev-pgsql
+  controlPlane:
+    nodes: 3
+    vmPrefix: pg-ctl
+  workerVmBudget: 4
+
+defaults:
+  network: tailscale
+  kubernetes: k3s
+  image: exeuntu
+  isolated: true
+
+projects:
+  database:
+    tasks:
+      pg:
+        nodes: 3
+        replicas: 3
+        vmPrefix: pg-data
+        labels:
+          exedev.dev/role: postgres
+          node-role.kubernetes.io/postgres: ""
+
+sparePools:
+  tailnet:
+    nodes: 1
+    vmPrefix: pg-tailnet
+    isolated: false
+    labels:
+      exedev.dev/role: tailnet
+      exedev.dev/purpose: pg-access

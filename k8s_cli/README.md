@@ -24,6 +24,7 @@ Run the binary directly:
 Local tools:
 
 - `ssh`
+- `scp`
 - `kubectl`
 
 Environment variables:
@@ -207,9 +208,10 @@ Expected result: `test-ex-p1-a-1` and `test-ex-p2-b-1` are `Ready`, and
 confirmation unless `--yes` is passed. `destroy` always asks for confirmation,
 even when global `--yes` is present.
 
-`bootstrap` creates missing VMs, installs Tailscale and k3s through local
-`ssh exe.dev ssh <vm> ...`, applies labels and taints with `kubectl`, and
-optionally runs `kubectl apply -f <dir>`.
+`bootstrap` creates missing VMs, uploads `k8s_cli/scripts/` with `scp`, runs
+the node bootstrap scripts through interactive `ssh -tt`, applies labels and
+taints with `kubectl`, and optionally runs `kubectl apply -f <dir>` or
+`kubectl apply -k <dir>` when a directory contains `kustomization.yaml`.
 
 The generated kubeconfig and k3s token for new clusters are stored under:
 

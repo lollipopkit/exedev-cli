@@ -1,0 +1,39 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pg-main-rw
+  namespace: database
+spec:
+  cluster:
+    name: pg-main
+  type: rw
+  instances: 2
+  pgbouncer:
+    poolMode: session
+    parameters:
+      max_client_conn: "500"
+      default_pool_size: "20"
+      reserve_pool_size: "5"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pg-main-rw
+    spec:
+      nodeSelector:
+        exedev.dev/role: tailnet
+      containers:
+        - name: pgbouncer
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  serviceTemplate:
+    metadata:
+      annotations:
+        tailscale.com/hostname: pg-main-rw
+    spec:
+      type: LoadBalancer
+      loadBalancerClass: tailscale

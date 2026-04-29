@@ -2,12 +2,10 @@ use super::super::fleet::NodeSpec;
 use super::kubectl::kubeconfig_args;
 use super::parsing::{parse_kubernetes_nodes, parse_vm_names};
 use super::process::{
-    command_output_detail, display_command, parse_remote_stdout, remote_ssh_args,
-    remote_status_script,
+    command_output_detail, display_command, parse_remote_stdout, remote_interactive_command,
+    remote_ssh_args, remote_status_script, scp_args,
 };
-use super::scripts::{
-    k3s_agent_install_command, k3s_server_install_command, tailscale_install_command,
-};
+use super::scripts::{BootstrapNodeRequest, BootstrapNodeRole};
 use super::*;
 use std::{collections::BTreeMap, path::Path};
 
@@ -54,68 +52,6 @@ fn builds_exedev_new_command() {
 }
 
 #[test]
-fn tailscale_install_command_starts_daemon_before_up() {
-    let command = tailscale_install_command("tskey-auth-test");
-    let start_index = command.find("systemctl enable --now tailscaled").unwrap();
-    let up_index = command.find("tailscale up --auth-key").unwrap();
-    let lock_index = command.find("tailscale lock status").unwrap();
-    assert!(start_index < up_index);
-    assert!(up_index < lock_index);
-    assert!(command.contains("service tailscaled start"));
-    assert!(command.contains("nohup tailscaled"));
-    assert!(command.contains("--auth-key 'tskey-auth-test'"));
-    assert!(command.contains("tailscale_up_output=\"$(${SUDO} tailscale up"));
-    assert!(command.contains("this node is locked out"));
-    assert!(command.contains("LOCKED OUT by tailnet-lock"));
-    assert!(command.contains("bootstrap paused"));
-    assert!(command.contains("Action required:"));
-    assert!(command.contains("trusted signing node"));
-}
-
-#[test]
-fn k3s_server_install_command_supports_no_supervisor_fallback() {
-    let command =
-        k3s_server_install_command("vm-1", "token'with-quote", "100.64.0.10", "100.64.0.10");
-    assert!(command.contains("[ -d /run/systemd/system ]"));
-    assert!(command.contains("install_k3s_binary"));
-    assert!(command.contains("nohup k3s server"));
-    assert!(command.contains("INSTALL_K3S_SKIP_START=true"));
-    assert!(command.contains("start_k3s_service_no_block k3s"));
-    assert!(command.contains("systemctl start --no-block \"$k3s_service\""));
-    assert!(command.contains("--write-kubeconfig-mode 644 --node-name \"$K3S_NODE_NAME\""));
-    assert!(command.contains("require_no_k3s_agent_state_for_server"));
-    assert!(command.contains("--cluster-cidr \"$K3S_CLUSTER_CIDR\""));
-    assert!(command.contains("--service-cidr \"$K3S_SERVICE_CIDR\""));
-    assert!(command.contains("--node-ip \"$K3S_NODE_IP\""));
-    assert!(command.contains("--advertise-address \"$K3S_NODE_IP\""));
-    assert!(command.contains("--tls-san \"$K3S_TLS_SAN\""));
-    assert!(command.contains("K3S_BOOTSTRAP_TOKEN='token'\\''with-quote'"));
-    assert!(command.contains("K3S_NODE_NAME='vm-1'"));
-    assert!(command.contains("K3S_TLS_SAN='100.64.0.10'"));
-    assert!(command.contains("K3S_NODE_IP='100.64.0.10'"));
-    assert!(command.contains("K3S_CLUSTER_CIDR='10.244.0.0/16'"));
-    assert!(command.contains("K3S_SERVICE_CIDR='10.245.0.0/16'"));
-}
-
-#[test]
-fn k3s_agent_install_command_supports_no_supervisor_fallback() {
-    let command =
-        k3s_agent_install_command("vm-2", "https://100.64.0.1:6443", "token", "100.64.0.2");
-    assert!(command.contains("install_k3s_binary"));
-    assert!(command.contains("nohup k3s agent --node-name \"$K3S_NODE_NAME\""));
-    assert!(command.contains("--node-ip \"$K3S_NODE_IP\""));
-    assert!(command.contains("INSTALL_K3S_SKIP_START=true"));
-    assert!(command.contains("require_no_k3s_server_state_for_agent"));
-    assert!(command.contains("restart_k3s_service_no_block k3s-agent"));
-    assert!(command.contains("systemctl restart --no-block \"$k3s_service\""));
-    assert!(command.contains("k3s_service_started k3s-agent"));
-    assert!(command.contains("K3S_SERVER_URL='https://100.64.0.1:6443'"));
-    assert!(command.contains("K3S_BOOTSTRAP_TOKEN='token'"));
-    assert!(command.contains("K3S_NODE_NAME='vm-2'"));
-    assert!(command.contains("K3S_NODE_IP='100.64.0.2'"));
-}
-
-#[test]
 fn builds_remote_ssh_command_for_stdin_script() {
     let args = remote_ssh_args("vm-1");
     assert_eq!(args.len(), 11);
@@ -133,15 +69,62 @@ fn builds_remote_ssh_command_for_stdin_script() {
 }
 
 #[test]
+fn builds_scp_command_for_script_upload() {
+    let args = scp_args("k8s_cli/scripts/.", "vm-1.exe.xyz:/tmp/scripts");
+    assert_eq!(args[0], "-r");
+    assert!(args.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+    assert_eq!(args[args.len() - 2], "k8s_cli/scripts/.");
+    assert_eq!(args[args.len() - 1], "vm-1.exe.xyz:/tmp/scripts");
+}
+
+#[test]
+fn bootstrap_node_request_envs_include_role_and_assume_yes() {
+    let request = BootstrapNodeRequest {
+        vm_name: "vm-1".into(),
+        role: BootstrapNodeRole::ControlPlaneJoin,
+        cluster_name: "pg".into(),
+        ts_authkey: "tskey-auth-test".into(),
+        k3s_token: "token".into(),
+        k3s_server_url: Some("https://100.64.0.1:6443".into()),
+        assume_yes: true,
+    };
+    let envs = request.envs();
+    assert!(envs.contains(&("EXEDEV_NODE_ROLE".into(), "control-plane-join".into())));
+    assert!(envs.contains(&("EXEDEV_CLI_ASSUME_YES".into(), "1".into())));
+    assert!(envs.contains(&("K3S_SERVER_URL".into(), "https://100.64.0.1:6443".into())));
+}
+
+#[test]
+fn remote_interactive_command_exports_runtime_env() {
+    let command = remote_interactive_command(
+        "/tmp/exedev-k8s",
+        "bootstrap-node.sh",
+        &[
+            ("EXEDEV_NODE_ROLE".into(), "worker".into()),
+            ("K3S_BOOTSTRAP_TOKEN".into(), "token'quote".into()),
+        ],
+        None,
+    );
+    assert!(command.starts_with("cd /tmp/exedev-k8s && env "));
+    assert!(command.contains("EXEDEV_NODE_ROLE=worker"));
+    assert!(command.contains("'K3S_BOOTSTRAP_TOKEN=token'\\''quote'"));
+    assert!(command.ends_with("bash ./bootstrap-node.sh"));
+}
+
+#[test]
 fn display_command_redacts_bootstrap_secrets() {
     let command = display_command(
         "ssh",
         &[
             "exe.dev",
-            "ssh vm-1 'sh -lc '\\''K3S_BOOTSTRAP_TOKEN='\\''\\'\\'''\\''abc123'\\''\\'\\'''\\''\nsudo tailscale up --auth-key '\\''\\'\\'''\\''tskey-auth-secret'\\''\\'\\'''\\'''\\'''",
+            "ssh vm-1 'sh -lc '\\''K3S_BOOTSTRAP_TOKEN='\\''\\'\\'''\\''abc123'\\''\\'\\'''\\''\nexample --auth-key '\\''\\'\\'''\\''tskey-auth-secret'\\''\\'\\'''\\'''\\'''",
         ],
     );
     assert!(command.contains("K3S_BOOTSTRAP_TOKEN=<redacted>"));
+    assert!(
+        display_command("ssh", &["EXEDEV_CLI_API_TOKEN=super-secret"])
+            .contains("EXEDEV_CLI_API_TOKEN=<redacted>")
+    );
     assert!(command.contains("tskey-auth-<redacted>"));
     assert!(!command.contains("abc123"));
     assert!(!command.contains("tskey-auth-secret"));

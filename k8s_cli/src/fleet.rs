@@ -111,8 +111,11 @@ impl FleetFile {
         if self.cluster.name.trim().is_empty() {
             bail!("cluster.name must not be empty");
         }
-        if self.cluster.control_plane.nodes != 1 {
-            bail!("only cluster.controlPlane.nodes: 1 is supported in v1");
+        if self.cluster.control_plane.nodes == 0 {
+            bail!("cluster.controlPlane.nodes must be greater than 0");
+        }
+        if self.cluster.control_plane.nodes != 1 && self.cluster.control_plane.nodes % 2 == 0 {
+            bail!("cluster.controlPlane.nodes must be 1 or an odd number for HA embedded etcd");
         }
         if self.cluster.control_plane.vm_prefix.trim().is_empty() {
             bail!("cluster.controlPlane.vmPrefix must not be empty");
@@ -157,19 +160,23 @@ impl FleetFile {
         let mut control_labels = BTreeMap::new();
         control_labels.insert("exedev.dev/role".into(), "control-plane".into());
         control_labels.insert("exedev.dev/pool".into(), "control-plane".into());
-        nodes.push(NodeSpec {
-            name: format!("{}-1", self.cluster.control_plane.vm_prefix),
-            role: NodeRole::ControlPlane,
-            pool: "control-plane".into(),
-            image: self
-                .cluster
-                .control_plane
-                .image
-                .clone()
-                .unwrap_or_else(|| default_image.clone()),
-            labels: control_labels,
-            taint: None,
-        });
+        for index in 1..=self.cluster.control_plane.nodes {
+            let mut labels = control_labels.clone();
+            labels.insert("exedev.dev/control-plane-index".into(), index.to_string());
+            nodes.push(NodeSpec {
+                name: format!("{}-{index}", self.cluster.control_plane.vm_prefix),
+                role: NodeRole::ControlPlane,
+                pool: "control-plane".into(),
+                image: self
+                    .cluster
+                    .control_plane
+                    .image
+                    .clone()
+                    .unwrap_or_else(|| default_image.clone()),
+                labels,
+                taint: None,
+            });
+        }
 
         for (project_name, project) in &self.projects {
             for (task_name, task) in &project.tasks {
@@ -260,10 +267,11 @@ impl FleetFile {
 }
 
 impl FleetPlan {
-    pub(crate) fn control_plane(&self) -> Option<&NodeSpec> {
+    pub(crate) fn control_planes(&self) -> Vec<&NodeSpec> {
         self.nodes
             .iter()
-            .find(|node| node.role == NodeRole::ControlPlane)
+            .filter(|node| node.role == NodeRole::ControlPlane)
+            .collect()
     }
 
     pub(crate) fn bootstrap_nodes(&self, include_control_plane: bool) -> Vec<&NodeSpec> {
@@ -334,7 +342,26 @@ sparePools:
     }
 
     #[test]
-    fn rejects_ha_control_plane() {
+    fn expands_ha_control_planes() {
+        let fleet: FleetFile = serde_yaml::from_str(
+            r#"
+cluster:
+  name: demo
+  controlPlane:
+    nodes: 3
+    vmPrefix: cp
+"#,
+        )
+        .unwrap();
+        let plan = fleet.to_plan();
+        let controls = plan.control_planes();
+        assert_eq!(controls.len(), 3);
+        assert_eq!(controls[0].name, "cp-1");
+        assert_eq!(controls[2].labels["exedev.dev/control-plane-index"], "3");
+    }
+
+    #[test]
+    fn rejects_even_ha_control_plane() {
         let fleet: FleetFile = serde_yaml::from_str(
             r#"
 cluster:

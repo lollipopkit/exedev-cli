@@ -1,0 +1,67 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-main
+  namespace: database
+  labels:
+    app.kubernetes.io/name: pg-main
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
+  imagePullPolicy: IfNotPresent
+
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      dataChecksums: true
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: pg-main-s3
+
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
+    parameters:
+      max_connections: "300"
+      shared_buffers: 2GB
+      effective_cache_size: 5GB
+      maintenance_work_mem: 512MB
+      checkpoint_completion_target: "0.9"
+      wal_compression: "on"
+      random_page_cost: "1.1"
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "1800m"
+      memory: 6Gi
+
+  storage:
+    storageClass: local-path
+    size: 40Gi
+  walStorage:
+    storageClass: local-path
+    size: 8Gi
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+    nodeSelector:
+      exedev.dev/project: database
+      exedev.dev/task: pg
+    tolerations:
+      - key: exedev.dev/pool
+        operator: Equal
+        value: database-pg
+        effect: NoSchedule

@@ -7,9 +7,18 @@ pub(super) const KUBECTL_DEFAULT_REQUEST_TIMEOUT: &str = "30s";
 pub(super) const KUBECTL_PROBE_REQUEST_TIMEOUT: &str = "8s";
 
 pub(super) async fn kubectl_apply(kubeconfig: Option<&Path>, manifests: &Path) -> Result<()> {
+    let apply_flag = if manifests.is_dir() && manifests.join("kustomization.yaml").exists() {
+        "-k"
+    } else {
+        "-f"
+    };
     kubectl_run_owned(
         kubeconfig,
-        vec!["apply".into(), "-f".into(), manifests.display().to_string()],
+        vec![
+            "apply".into(),
+            apply_flag.into(),
+            manifests.display().to_string(),
+        ],
     )
     .await
 }

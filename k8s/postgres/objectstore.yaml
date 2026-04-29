@@ -1,0 +1,27 @@
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: pg-main-s3
+  namespace: database
+spec:
+  configuration:
+    destinationPath: s3://exedev-pgsql-backups/pg-main
+    endpointURL: http://minio.minio.svc.cluster.local:9000
+    s3Credentials:
+      accessKeyId:
+        name: pg-main-backup-s3
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: pg-main-backup-s3
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+  instanceSidecarConfiguration:
+    retentionPolicyIntervalSeconds: 1800
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

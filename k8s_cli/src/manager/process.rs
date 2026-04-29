@@ -1,3 +1,4 @@
+use super::api_proxy::ApiProxy;
 use crate::output;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
@@ -127,6 +128,56 @@ pub(super) async fn ensure_tool(tool: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) async fn upload_script_dir(vm: &str, script_dir: &Path, remote_dir: &str) -> Result<()> {
+    if !script_dir.is_dir() {
+        bail!("script directory does not exist: {}", script_dir.display());
+    }
+    remote_run(
+        vm,
+        &format!(
+            "rm -rf {remote_dir} && mkdir -p {remote_dir}",
+            remote_dir = shell::shell_join(&[remote_dir.to_string()])
+        ),
+    )
+    .await?;
+
+    let source = format!("{}/.", script_dir.display());
+    let target = format!("{vm}.exe.xyz:{remote_dir}");
+    let args = scp_args(&source, &target);
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_command("scp", &refs, Stdio::inherit()).await
+}
+
+pub(super) async fn run_remote_interactive_script(
+    vm: &str,
+    remote_dir: &str,
+    script_name: &str,
+    envs: &[(String, String)],
+    api_proxy: Option<&ApiProxy>,
+) -> Result<()> {
+    let mut args = remote_ssh_base_args(vm);
+    args.insert(0, "-tt".into());
+    if let Some(proxy) = api_proxy {
+        args.splice(
+            0..0,
+            [
+                "-o".into(),
+                "ExitOnForwardFailure=yes".into(),
+                "-R".into(),
+                format!("127.0.0.1:{port}:127.0.0.1:{port}", port = proxy.port()),
+            ],
+        );
+    }
+    args.push(remote_interactive_command(
+        remote_dir,
+        script_name,
+        envs,
+        api_proxy,
+    ));
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_interactive_command("ssh", &refs).await
+}
+
 pub(super) async fn run_command(program: &str, args: &[&str], stdout: Stdio) -> Result<()> {
     println!(
         "{}",
@@ -136,6 +187,25 @@ pub(super) async fn run_command(program: &str, args: &[&str], stdout: Stdio) -> 
         .args(args)
         .stdin(Stdio::null())
         .stdout(stdout)
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| format!("failed to run {program}"))?;
+    if !status.success() {
+        bail!("{program} exited with status {status}");
+    }
+    Ok(())
+}
+
+pub(super) async fn run_interactive_command(program: &str, args: &[&str]) -> Result<()> {
+    println!(
+        "{}",
+        output::command(format!("$ {}", display_command(program, args)))
+    );
+    let status = TokioCommand::new(program)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .await
@@ -296,6 +366,12 @@ pub(super) fn display_command(program: &str, args: &[&str]) -> String {
 }
 
 pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
+    let mut args = remote_ssh_base_args(vm);
+    args.extend(["sh".into(), "-s".into()]);
+    args
+}
+
+pub(super) fn remote_ssh_base_args(vm: &str) -> Vec<String> {
     vec![
         "-o".into(),
         "ControlMaster=no".into(),
@@ -306,14 +382,49 @@ pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
         "-o".into(),
         "ConnectTimeout=15".into(),
         format!("{vm}.exe.xyz"),
-        "sh".into(),
-        "-s".into(),
     ]
+}
+
+pub(super) fn scp_args(source: &str, target: &str) -> Vec<String> {
+    vec![
+        "-r".into(),
+        "-o".into(),
+        "ControlMaster=no".into(),
+        "-o".into(),
+        "ControlPath=none".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=15".into(),
+        source.into(),
+        target.into(),
+    ]
+}
+
+pub(super) fn remote_interactive_command(
+    remote_dir: &str,
+    script_name: &str,
+    envs: &[(String, String)],
+    api_proxy: Option<&ApiProxy>,
+) -> String {
+    let cd = shell::shell_join(&["cd".into(), remote_dir.into()]);
+    let mut words = vec!["env".to_string()];
+    words.extend(envs.iter().map(|(key, value)| format!("{key}={value}")));
+    if let Some(proxy) = api_proxy {
+        words.push(format!("EXEDEV_CLI_API_URL={}", proxy.url()));
+        words.push(format!("EXEDEV_CLI_API_TOKEN={}", proxy.token()));
+    }
+    words.extend(["bash".into(), format!("./{script_name}")]);
+    format!("{cd} && {}", shell::shell_join(&words))
 }
 
 pub(super) fn redact_command_secrets(command: &str) -> String {
     let mut redacted = redact_prefixed_secret(command, "tskey-auth-", "tskey-auth-<redacted>");
-    for key in ["K3S_BOOTSTRAP_TOKEN=", "K3S_TOKEN="] {
+    for key in [
+        "K3S_BOOTSTRAP_TOKEN=",
+        "K3S_TOKEN=",
+        "EXEDEV_CLI_API_TOKEN=",
+    ] {
         redacted = redact_assignment_value(&redacted, key);
     }
     redacted

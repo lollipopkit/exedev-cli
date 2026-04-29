@@ -21,6 +21,7 @@ use std::{
 };
 use tokio::time::{Duration, sleep};
 
+mod api_proxy;
 mod kubectl;
 mod parsing;
 mod process;
@@ -34,11 +35,10 @@ use kubectl::{
     kubectl_run_owned,
 };
 use parsing::{parse_kubernetes_nodes, parse_vm_names};
-use process::{ensure_tool, remote_capture, remote_run, verify_vm_access};
-use scripts::{
-    k3s_agent_install_command, k3s_server_install_command, remote_bootstrap_script,
-    remote_privileged_script, tailscale_install_command,
+use process::{
+    ensure_tool, remote_capture, run_remote_interactive_script, upload_script_dir, verify_vm_access,
 };
+use scripts::{BOOTSTRAP_NODE_SCRIPT, BootstrapNodeRequest, BootstrapNodeRole, script_dir};
 use state::{
     generated_kubeconfig_path, generated_token_path, read_or_create_k3s_token, write_secret_file,
 };
@@ -70,6 +70,7 @@ async fn run_plan(endpoint: &str, cmd: PlanCmd) -> Result<()> {
 async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<()> {
     let plan = load_plan(&cmd.fleet)?;
     ensure_tool("ssh").await?;
+    ensure_tool("scp").await?;
     ensure_tool("kubectl").await?;
     let ts_authkey = require_env(TS_AUTHKEY_ENV)?;
     if cmd.mode == ClusterMode::Existing {
@@ -81,10 +82,19 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     print_bootstrap_plan(&plan, cmd.mode, &current, cmd.manifests.as_deref());
     confirm("Run this bootstrap plan?", yes)?;
 
-    let client = exe_client(endpoint)?;
+    let api_key = exe_api_key()?;
+    let client = ExeDevClient::new(endpoint.to_string(), api_key.clone());
     create_missing_vms(&client, &plan, include_control_plane, &current, &cmd.fleet).await?;
-    let new_cluster_access =
-        bootstrap_k3s(&plan, cmd.mode, &ts_authkey, cmd.kubeconfig.as_deref()).await?;
+    let new_cluster_access = bootstrap_k3s(
+        &plan,
+        cmd.mode,
+        &ts_authkey,
+        cmd.kubeconfig.as_deref(),
+        endpoint,
+        &api_key,
+        yes,
+    )
+    .await?;
 
     let kubeconfig = kubeconfig_for_bootstrap(&plan, cmd.mode, cmd.kubeconfig.as_deref());
     wait_for_kubernetes_api(kubeconfig.as_deref(), new_cluster_access.as_ref()).await?;
@@ -145,9 +155,12 @@ fn load_plan(path: &Path) -> Result<FleetPlan> {
 }
 
 fn exe_client(endpoint: &str) -> Result<ExeDevClient> {
-    let api_key = env::var(API_KEY_ENV)
-        .with_context(|| format!("missing {API_KEY_ENV}; export an exe.dev HTTPS API key first"))?;
-    Ok(ExeDevClient::new(endpoint.to_string(), api_key))
+    Ok(ExeDevClient::new(endpoint.to_string(), exe_api_key()?))
+}
+
+fn exe_api_key() -> Result<String> {
+    env::var(API_KEY_ENV)
+        .with_context(|| format!("missing {API_KEY_ENV}; export an exe.dev HTTPS API key first"))
 }
 
 async fn fetch_current_vms(endpoint: &str) -> Result<BTreeSet<String>> {
@@ -315,27 +328,37 @@ async fn bootstrap_k3s(
     mode: ClusterMode,
     ts_authkey: &str,
     kubeconfig_arg: Option<&Path>,
+    endpoint: &str,
+    api_key: &str,
+    yes: bool,
 ) -> Result<Option<NewClusterAccess>> {
+    let api_proxy = api_proxy::ApiProxy::start(endpoint.to_string(), api_key.to_string())?;
     match mode {
         ClusterMode::New => {
-            let control = plan
-                .control_plane()
+            let controls = plan.control_planes();
+            let control = *controls
+                .first()
                 .context("fleet has no control-plane node")?;
             let mut token = read_or_create_k3s_token(&plan.cluster_name)?;
-            install_tailscale(&control.name, ts_authkey).await?;
-            let control_ip = remote_capture(&control.name, "tailscale ip -4 | head -n1").await?;
-            let control_ip = control_ip.trim();
-            if control_ip.is_empty() {
-                bail!("failed to detect Tailscale IPv4 for {}", control.name);
-            }
+            bootstrap_node(
+                plan,
+                control,
+                BootstrapNodeRole::ControlPlanePrimary,
+                ts_authkey,
+                &token,
+                None,
+                yes,
+                &api_proxy,
+            )
+            .await?;
+            let control_ip = fetch_tailscale_ip(&control.name).await?;
             let control_ip_addr = control_ip.parse::<Ipv4Addr>().with_context(|| {
                 format!("invalid Tailscale IPv4 for {}: {control_ip}", control.name)
             })?;
-            install_k3s_server(&control.name, &token, control_ip, control_ip).await?;
             let k3s_url = format!("https://{control_ip}:6443");
             token = fetch_k3s_node_token(&control.name).await?;
             write_secret_file(&generated_token_path(&plan.cluster_name), &token)?;
-            let kubeconfig = fetch_kubeconfig(&control.name, control_ip).await?;
+            let kubeconfig = fetch_kubeconfig(&control.name, &control_ip).await?;
             let kubeconfig_path = kubeconfig_arg
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| generated_kubeconfig_path(&plan.cluster_name));
@@ -346,14 +369,36 @@ async fn bootstrap_k3s(
                 output::label(kubeconfig_path.display())
             );
 
+            for control in controls.iter().copied().skip(1) {
+                bootstrap_node(
+                    plan,
+                    control,
+                    BootstrapNodeRole::ControlPlaneJoin,
+                    ts_authkey,
+                    &token,
+                    Some(&k3s_url),
+                    yes,
+                    &api_proxy,
+                )
+                .await?;
+            }
+
             for node in plan
                 .nodes
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                bootstrap_node(
+                    plan,
+                    node,
+                    BootstrapNodeRole::Worker,
+                    ts_authkey,
+                    &token,
+                    Some(&k3s_url),
+                    yes,
+                    &api_proxy,
+                )
+                .await?;
             }
             Ok(Some(NewClusterAccess {
                 control_name: control.name.clone(),
@@ -374,31 +419,90 @@ async fn bootstrap_k3s(
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                bootstrap_node(
+                    plan,
+                    node,
+                    BootstrapNodeRole::Worker,
+                    ts_authkey,
+                    &token,
+                    Some(&k3s_url),
+                    yes,
+                    &api_proxy,
+                )
+                .await?;
             }
             Ok(None)
         }
     }
 }
 
-async fn install_tailscale(vm: &str, authkey: &str) -> Result<()> {
-    let command = tailscale_install_command(authkey);
-    let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+async fn bootstrap_node(
+    plan: &FleetPlan,
+    node: &NodeSpec,
+    role: BootstrapNodeRole,
+    ts_authkey: &str,
+    k3s_token: &str,
+    k3s_server_url: Option<&str>,
+    assume_yes: bool,
+    api_proxy: &api_proxy::ApiProxy,
+) -> Result<()> {
+    let local_scripts = script_dir();
+    let remote_dir = remote_script_dir(&plan.cluster_name, &node.name);
+    upload_script_dir(&node.name, &local_scripts, &remote_dir).await?;
+    let request = BootstrapNodeRequest {
+        vm_name: node.name.clone(),
+        role,
+        cluster_name: plan.cluster_name.clone(),
+        ts_authkey: ts_authkey.into(),
+        k3s_token: k3s_token.into(),
+        k3s_server_url: k3s_server_url.map(str::to_string),
+        assume_yes,
+    };
+    run_remote_interactive_script(
+        &node.name,
+        &remote_dir,
+        BOOTSTRAP_NODE_SCRIPT,
+        &request.envs(),
+        Some(api_proxy),
+    )
+    .await
 }
 
-async fn install_k3s_server(vm: &str, token: &str, tls_san: &str, node_ip: &str) -> Result<()> {
-    let command = k3s_server_install_command(vm, token, tls_san, node_ip);
-    let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+fn remote_script_dir(cluster_name: &str, node_name: &str) -> String {
+    format!(
+        "/tmp/exedev-k8s-{}-{}",
+        safe_remote_name(cluster_name),
+        safe_remote_name(node_name)
+    )
 }
 
-async fn install_k3s_agent(vm: &str, k3s_url: &str, token: &str, node_ip: &str) -> Result<()> {
-    let command = k3s_agent_install_command(vm, k3s_url, token, node_ip);
-    let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+fn safe_remote_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn remote_privileged_script(command: &str) -> String {
+    format!(
+        r#"
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+else
+  echo "root or sudo is required" >&2
+  exit 127
+fi
+{command}
+"#
+    )
 }
 
 async fn fetch_tailscale_ip(vm: &str) -> Result<String> {
