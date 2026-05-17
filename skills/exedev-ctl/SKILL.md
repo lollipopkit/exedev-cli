@@ -46,7 +46,9 @@ Use `--json` when output must be parsed, compared, or included in automation.
 
 ## SSH and API Boundary
 
-`exedev-ctl` uses `POST https://exe.dev/exec` by default. The endpoint has no stdin or pty, so commands that need interactive behavior fall back to local SSH:
+`exedev-ctl` uses local SSH by default. It can use `POST https://exe.dev/exec` when the user passes `--transport http`; that mode requires `EXE_DEV_API_KEY`.
+
+The HTTPS endpoint has no stdin or pty, so these commands always use local SSH even with `--transport http`:
 
 - `exedev-ctl ssh ...`
 - `exedev-ctl new --prompt /dev/stdin`

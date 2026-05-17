@@ -4,16 +4,16 @@
 
 `exedev-ctl` 是本 workspace 内置的 Rust exe.dev CLI。
 
-它默认通过官方 HTTPS API 调用 exe.dev：
-
-```text
-POST https://exe.dev/exec
-```
-
-请求体是原生 exe.dev command，语义等同于：
+它默认通过本机 SSH 调用 exe.dev：
 
 ```sh
 ssh exe.dev <command>
+```
+
+也可以显式切换到官方 HTTPS command API：
+
+```text
+POST https://exe.dev/exec
 ```
 
 ## Build
@@ -36,10 +36,13 @@ cargo run -p exedev-ctl -- --help
 
 ## Authentication
 
-`exedev-ctl` 读取 `EXE_DEV_API_KEY`：
+默认 SSH 模式使用本机 `ssh exe.dev` 认证，不需要 API token。
+
+HTTPS 模式读取 `EXE_DEV_API_KEY`：
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
+exedev-ctl --transport http ls
 ```
 
 它也会自动加载 `.env`：
@@ -52,6 +55,23 @@ shell 环境中已存在的变量优先于 `.env`。
 
 token generation 见
 [`../docs/exedev-automation.md`](../docs/exedev-automation.md)。
+
+## Transport
+
+默认 transport 是 SSH：
+
+```sh
+exedev-ctl ls
+exedev-ctl --transport ssh ls
+```
+
+本机 SSH 不可用，或者需要在服务里用 bearer token 时，显式使用 HTTPS：
+
+```sh
+exedev-ctl --transport http ls
+```
+
+`--endpoint` 只对 HTTPS transport 生效。
 
 ## Common Commands
 
@@ -107,15 +127,16 @@ exedev-ctl exec -- 'whoami'
 exedev-ctl --json ls
 ```
 
-## SSH Fallback
+## SSH-only Commands
 
-官方 HTTPS `/exec` endpoint 没有 pty，也没有 stdin。以下场景会 fallback 到本地命令：
+官方 HTTPS `/exec` endpoint 没有 pty，也没有 stdin。以下场景即使指定
+`--transport http` 也会使用本地命令：
 
 ```sh
 ssh exe.dev ...
 ```
 
-当前 fallback 场景：
+当前 SSH-only 场景：
 
 - `exedev-ctl ssh ...`
 - `exedev-ctl new --prompt /dev/stdin`

@@ -76,7 +76,21 @@ The CLI loads `.env` automatically, while shell environment values take preceden
 
 ## Authentication
 
-The CLI reads:
+The CLI uses local SSH by default:
+
+```sh
+ssh exe.dev <command>
+```
+
+This mode does not need an API token.
+
+HTTPS mode is explicit:
+
+```sh
+exedev-ctl --transport http ls
+```
+
+In HTTPS mode, the CLI reads:
 
 ```sh
 EXE_DEV_API_KEY=exe0....
@@ -102,6 +116,7 @@ List VMs:
 
 ```sh
 exedev-ctl --json ls
+exedev-ctl --transport http --json ls
 ```
 
 Create a VM:
@@ -183,8 +198,9 @@ For destructive operations, include commands intentionally and narrowly, for exa
 
 When a VM task fails:
 
-1. Run `exedev-ctl whoami` or `exedev-ctl --json ls` to verify token/auth.
-2. If HTTP status is `403`, check token `cmds` permissions.
-3. If HTTP status is `422`, read the exe.dev command failure body.
-4. If interactive SSH or stdin is involved, switch to the SSH fallback path.
-5. If SSH or script transport fails, prefer direct `ssh <vm>.exe.xyz ...` checks to separate VM reachability from exe.dev API permissions.
+1. Run `exedev-ctl whoami` or `exedev-ctl --json ls` to verify default SSH auth.
+2. For HTTPS-specific failures, retry with `exedev-ctl --transport http whoami` or `exedev-ctl --transport http --json ls`.
+3. If HTTP status is `403`, check token `cmds` permissions.
+4. If HTTP status is `422`, read the exe.dev command failure body.
+5. If interactive SSH or stdin is involved, use the SSH path.
+6. If SSH or script transport fails, prefer direct `ssh <vm>.exe.xyz ...` checks to separate VM reachability from exe.dev API permissions.

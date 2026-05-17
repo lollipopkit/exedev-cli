@@ -4,14 +4,17 @@
 
 `exedev-ctl` is the Rust exe.dev CLI included in this workspace.
 
-It calls exe.dev through the official HTTPS API by default:
+It calls exe.dev through local SSH by default:
+
+```sh
+ssh exe.dev <command>
+```
+
+It can also call the official HTTPS command API when requested:
 
 ```text
 POST https://exe.dev/exec
 ```
-
-The request body is the native exe.dev command, equivalent to
-`ssh exe.dev <command>`.
 
 ## Build
 
@@ -33,10 +36,14 @@ Or use the binary directly:
 
 ## Authentication
 
-`exedev-ctl` reads `EXE_DEV_API_KEY`:
+Default SSH mode uses your local `ssh exe.dev` authentication and does not need
+an API token.
+
+HTTPS mode reads `EXE_DEV_API_KEY`:
 
 ```sh
 export EXE_DEV_API_KEY="exe0...."
+exedev-ctl --transport http ls
 ```
 
 It also loads `.env` automatically:
@@ -49,6 +56,24 @@ Values already present in the shell environment take precedence over `.env`.
 
 See [`../docs/exedev-automation.md`](../docs/exedev-automation.md) for token
 generation.
+
+## Transport
+
+The default transport is SSH:
+
+```sh
+exedev-ctl ls
+exedev-ctl --transport ssh ls
+```
+
+Use HTTPS explicitly when local SSH is not available or when running from a
+service that should use a bearer token:
+
+```sh
+exedev-ctl --transport http ls
+```
+
+`--endpoint` only applies to HTTPS transport.
 
 ## Common Commands
 
@@ -104,16 +129,16 @@ Use `--json` to print raw JSON:
 exedev-ctl --json ls
 ```
 
-## SSH Fallback
+## SSH-only Commands
 
-The official HTTPS `/exec` endpoint has no pty and no stdin. These cases fall
-back to the local command:
+The official HTTPS `/exec` endpoint has no pty and no stdin. These cases
+always fall back to the local command, even when `--transport http` is selected:
 
 ```sh
 ssh exe.dev ...
 ```
 
-Current fallback cases:
+Current SSH-only cases:
 
 - `exedev-ctl ssh ...`
 - `exedev-ctl new --prompt /dev/stdin`
