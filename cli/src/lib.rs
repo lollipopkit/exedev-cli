@@ -30,7 +30,16 @@ async fn run_cli(cli: cli::Cli) -> Result<()> {
 
     shell::guard_dangerous_command(&command_string, cli.yes)?;
 
-    if built.fallback_ssh {
+    if cli.transport == cli::Transport::Http && built.fallback_ssh {
+        eprintln!(
+            "{}",
+            terminal::stderr_block(
+                "warning: --transport http is not supported for this command; falling back to ssh."
+            )
+        );
+    }
+
+    if cli.transport == cli::Transport::Ssh || built.fallback_ssh {
         return ssh::run_ssh_fallback(&built.words, cli.json).await;
     }
 

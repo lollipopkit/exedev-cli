@@ -15,15 +15,21 @@ npx skills add https://github.com/lollipopkit/exedev-cli
 
 ## exedev-ctl
 
-`exedev-ctl` is the exe.dev VM management CLI. It calls the exe.dev HTTPS command
-API, with SSH fallback for interactive commands.
+`exedev-ctl` is the exe.dev VM management CLI. It uses local SSH by default and
+can also call the exe.dev HTTPS command API with `--transport http`.
 
-Set the API token and list VMs:
+List VMs through SSH:
+
+```sh
+exedev-ctl ls
+```
+
+Use the HTTPS API explicitly:
 
 ```sh
 # You can create one from https://exe.dev/user
 export EXE_DEV_API_KEY="exe0...."
-exedev-ctl ls
+exedev-ctl --transport http ls
 ```
 
 Both CLIs also load environment variables from `.env` automatically. Existing
@@ -44,6 +50,8 @@ Detailed documentation:
 
 - [`cli/README.md`](cli/README.md): `exedev-ctl` build, auth, output, fallback,
   and command coverage.
+- [`docs/exe-dev-api-reference.md`](docs/exe-dev-api-reference.md): local notes
+  from the official exe.dev API, HTTPS token, VM token, and Login with exe docs.
 - [`docs/exedev-automation.md`](docs/exedev-automation.md): exe.dev HTTPS
   `POST /exec`, token generation, and automation boundaries.
 

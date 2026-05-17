@@ -15,15 +15,21 @@ npx skills add https://github.com/lollipopkit/exedev-cli
 
 ## exedev-ctl
 
-`exedev-ctl` 是 exe.dev VM 管理 CLI。它默认调用 exe.dev HTTPS command API，
-对交互式命令使用 SSH fallback。
+`exedev-ctl` 是 exe.dev VM 管理 CLI。它默认使用本机 SSH，也可以通过
+`--transport http` 调用 exe.dev HTTPS command API。
 
-设置 API token 并列出 VMs：
+通过 SSH 列出 VMs：
+
+```sh
+exedev-ctl ls
+```
+
+显式使用 HTTPS API：
 
 ```sh
 # 你可以从 https://exe.dev/user 创建一个
 export EXE_DEV_API_KEY="exe0...."
-exedev-ctl ls
+exedev-ctl --transport http ls
 ```
 
 两个 CLI 都会自动从 `.env` 读取环境变量。shell 里已经设置的环境变量优先。
@@ -43,6 +49,8 @@ automation 已经审阅过 action plan 后才使用 `--yes`。
 
 - [`cli/README.zh-CN.md`](cli/README.zh-CN.md)：`exedev-ctl` build、auth、output、
   fallback 和 command coverage。
+- [`docs/exe-dev-api-reference.md`](docs/exe-dev-api-reference.md)：官方
+  exe.dev API、HTTPS token、VM token 和 Login with exe 文档的本地笔记。
 - [`docs/exedev-automation.md`](docs/exedev-automation.md)：exe.dev HTTPS
   `POST /exec`、token generation 和 automation boundary。
 

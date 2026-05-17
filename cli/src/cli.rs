@@ -1,14 +1,17 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use exedev_core::DEFAULT_ENDPOINT;
 
 #[derive(Debug, Parser)]
 #[command(name = "exedev-ctl")]
-#[command(about = "Rust CLI for exe.dev over HTTPS /exec")]
+#[command(about = "Rust CLI for exe.dev over SSH by default, with optional HTTPS /exec transport")]
 #[command(version)]
 #[command(disable_help_subcommand = true)]
 pub(crate) struct Cli {
-    #[arg(long, global = true, default_value = DEFAULT_ENDPOINT)]
+    #[arg(long, global = true, default_value = DEFAULT_ENDPOINT, help = "HTTPS /exec endpoint used only with --transport http")]
     pub(crate) endpoint: String,
+
+    #[arg(long, global = true, value_enum, default_value_t = Transport::Ssh)]
+    pub(crate) transport: Transport,
 
     #[arg(long, global = true)]
     pub(crate) json: bool,
@@ -18,6 +21,12 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum Transport {
+    Ssh,
+    Http,
 }
 
 #[derive(Debug, Subcommand)]
@@ -441,10 +450,34 @@ pub(crate) struct ExecCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn transport_defaults_to_ssh() {
+        let cli = Cli::parse_from(["exedev-ctl", "ls"]);
+        assert_eq!(cli.transport, Transport::Ssh);
+    }
+
+    #[test]
+    fn parses_http_transport() {
+        let cli = Cli::parse_from(["exedev-ctl", "--transport", "http", "ls"]);
+        assert_eq!(cli.transport, Transport::Http);
+    }
+
+    #[test]
+    fn parses_ssh_transport() {
+        let cli = Cli::parse_from(["exedev-ctl", "--transport", "ssh", "ls"]);
+        assert_eq!(cli.transport, Transport::Ssh);
+    }
+
+    #[test]
+    fn rejects_unknown_transport() {
+        let result = Cli::try_parse_from(["exedev-ctl", "--transport", "auto", "ls"]);
+        assert!(result.is_err());
     }
 }
