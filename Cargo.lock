@@ -295,7 +295,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "exedev-core"
+name = "exedev-cli-core"
 version = "0.1.10"
 dependencies = [
  "anyhow",
@@ -312,7 +312,7 @@ dependencies = [
  "anyhow",
  "clap",
  "comfy-table",
- "exedev-core",
+ "exedev-cli-core",
  "serde_json",
  "tokio",
 ]
@@ -324,7 +324,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dialoguer",
- "exedev-core",
+ "exedev-cli-core",
  "rand 0.10.1",
  "serde",
  "serde_json",

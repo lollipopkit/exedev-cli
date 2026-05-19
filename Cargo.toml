@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 authors = ["lollipopkit <a@lollipopkit.com>"]
 license = "OSL-3.0"
-repository = "https://github.com/local/exedev-cli"
+repository = "https://github.com/lollipopkit/exedev-cli"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -14,7 +14,7 @@ clap = { version = "4.6", default-features = false, features = ["std", "derive",
 comfy-table = { version = "7.2", default-features = false, features = ["tty"] }
 dialoguer = { version = "0.12", default-features = false }
 dotenvy = "0.15"
-exedev-core = { path = "core" }
+exedev-core = { package = "exedev-cli-core", version = "0.1.10", path = "core" }
 rand = { version = "0.10", default-features = false, features = ["thread_rng"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }

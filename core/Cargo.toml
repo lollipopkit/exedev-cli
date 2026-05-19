@@ -1,10 +1,18 @@
 [package]
-name = "exedev-core"
+name = "exedev-cli-core"
 version = "0.1.10"
+description = "Shared client, environment, shell, and terminal utilities for exe.dev Rust CLIs."
+readme = "../README.md"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["exedev", "cli", "ssh", "api"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "exedev_core"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
