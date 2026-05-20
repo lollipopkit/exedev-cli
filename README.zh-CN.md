@@ -55,6 +55,13 @@ automation 已经审阅过 action plan 后才使用 `--yes`。
 - [`docs/exedev-automation.md`](docs/exedev-automation.md)：exe.dev HTTPS
   `POST /exec`、token generation 和 automation boundary。
 
+## exeuntu
+
+[`exeuntu`](https://github.com/lollipopkit/exeuntu) 是 exe.dev 的默认 base
+image。它基于 Ubuntu 24.04，面向 developer/agent 使用场景，包含 systemd，
+并预装了比 minimal container image 更完整的一组 apt 工具。已发布镜像位于
+`ghcr.io/lollipopkit/exeuntu`。
+
 ## exedev-k8s
 
 `exedev-k8s` 是 Kubernetes fleet 管理 CLI。它读取 `fleet.yaml`，创建或复用

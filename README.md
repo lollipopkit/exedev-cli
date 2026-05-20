@@ -56,6 +56,13 @@ Detailed documentation:
 - [`docs/exedev-automation.md`](docs/exedev-automation.md): exe.dev HTTPS
   `POST /exec`, token generation, and automation boundaries.
 
+## exeuntu
+
+[`exeuntu`](https://github.com/lollipopkit/exeuntu) is the default exe.dev base
+image. It is a developer-oriented Ubuntu 24.04 image with systemd and a broader
+set of apt-installed tools than a minimal container image. Published images are
+available from `ghcr.io/lollipopkit/exeuntu`.
+
 ## exedev-k8s
 
 `exedev-k8s` is the Kubernetes fleet management CLI. It reads `fleet.yaml`,
