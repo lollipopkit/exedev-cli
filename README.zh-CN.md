@@ -62,6 +62,13 @@ image。它基于 Ubuntu 24.04，面向 developer/agent 使用场景，包含 sy
 并预装了比 minimal container image 更完整的一组 apt 工具。已发布镜像位于
 `ghcr.io/lollipopkit/exeuntu`。
 
+## Release Compatibility
+
+Release archives 包含面向 `x86_64` 和 `aarch64` 的 Linux musl binaries，以及
+面向 Intel 和 Apple Silicon 的原生 macOS binaries。Linux release binaries
+使用 vendored native TLS 和 static OpenSSL 构建，运行时不依赖系统里的兼容
+`libssl.so`。CI 会在 release packaging 前验证 Linux musl dist build。
+
 ## exedev-k8s
 
 `exedev-k8s` 是 Kubernetes fleet 管理 CLI。它读取 `fleet.yaml`，创建或复用

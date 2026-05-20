@@ -38,5 +38,17 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
 
+      - name: Install Linux musl target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Check Linux musl release build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          OPENSSL_STATIC: "1"
+        run: cargo build --profile dist --locked --target x86_64-unknown-linux-musl -p exedev-ctl -p exedev-k8s
+
       - name: Validate example YAML
         run: ruby -e 'require "yaml"; YAML.load_file("fleet.example.yaml"); YAML.load_file("k8s/examples/project-task-deployment.yaml")'

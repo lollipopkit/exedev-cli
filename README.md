@@ -59,9 +59,17 @@ Detailed documentation:
 ## exeuntu
 
 [`exeuntu`](https://github.com/lollipopkit/exeuntu) is the default exe.dev base
-image. It is a developer-oriented Ubuntu 24.04 image with systemd and a broader
-set of apt-installed tools than a minimal container image. Published images are
-available from `ghcr.io/lollipopkit/exeuntu`.
+image. It is a developer/agent-oriented Ubuntu 24.04 image with systemd and a
+broader set of apt-installed tools than a minimal container image. Published
+images are available from `ghcr.io/lollipopkit/exeuntu`.
+
+## Release Compatibility
+
+Release archives include Linux musl binaries for `x86_64` and `aarch64`, plus
+native macOS binaries for Intel and Apple Silicon. Linux release binaries are
+built with vendored native TLS and static OpenSSL so they do not require a
+compatible system `libssl.so` at runtime. CI validates the Linux musl dist build
+before release packaging.
 
 ## exedev-k8s
 
