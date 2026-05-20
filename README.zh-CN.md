@@ -39,6 +39,7 @@ exedev-ctl --transport http ls
 ```sh
 exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
 exedev-ctl share port p1-a-1 8080
+exedev-ctl domain add p1-a-1 app.example.com
 exedev-ctl rm p1-a-1
 ```
 

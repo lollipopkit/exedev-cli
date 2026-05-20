@@ -113,6 +113,14 @@ Make the HTTP proxy public:
 exedev-ctl share set-public p1-a-1
 ```
 
+Register a custom domain after DNS points at the VM:
+
+```sh
+exedev-ctl domain add p1-a-1 app.example.com
+exedev-ctl domain ls p1-a-1
+exedev-ctl domain rm p1-a-1 app.example.com
+```
+
 Run a raw exe.dev command:
 
 ```sh
@@ -151,7 +159,7 @@ These commands require local SSH access to exe.dev.
 The CLI covers the top-level commands from the exe.dev CLI Reference:
 
 ```text
-help doc ls new rm restart rename tag stat cp resize share team whoami
+help doc ls new rm restart rename tag stat cp resize share domain team whoami
 ssh-key set-region integrations billing shelley browser ssh grant-support-root
 exit exec
 ```

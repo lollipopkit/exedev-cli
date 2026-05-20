@@ -111,6 +111,14 @@ exedev-ctl share port p1-a-1 8080
 exedev-ctl share set-public p1-a-1
 ```
 
+DNS 已指向 VM 后注册 custom domain：
+
+```sh
+exedev-ctl domain add p1-a-1 app.example.com
+exedev-ctl domain ls p1-a-1
+exedev-ctl domain rm p1-a-1 app.example.com
+```
+
 运行原始 exe.dev command：
 
 ```sh
@@ -149,7 +157,7 @@ ssh exe.dev ...
 CLI 覆盖 exe.dev CLI Reference 中的 top-level commands：
 
 ```text
-help doc ls new rm restart rename tag stat cp resize share team whoami
+help doc ls new rm restart rename tag stat cp resize share domain team whoami
 ssh-key set-region integrations billing shelley browser ssh grant-support-root
 exit exec
 ```
