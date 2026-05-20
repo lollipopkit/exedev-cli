@@ -39,6 +39,7 @@ exedev-ctl --transport http ls
 ```sh
 exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
 exedev-ctl share port p1-a-1 8080
+exedev-ctl domain add p1-a-1 app.example.com
 exedev-ctl rm p1-a-1
 ```
 
@@ -53,6 +54,20 @@ automation 已经审阅过 action plan 后才使用 `--yes`。
   exe.dev API、HTTPS token、VM token 和 Login with exe 文档的本地笔记。
 - [`docs/exedev-automation.md`](docs/exedev-automation.md)：exe.dev HTTPS
   `POST /exec`、token generation 和 automation boundary。
+
+## exeuntu
+
+[`exeuntu`](https://github.com/lollipopkit/exeuntu) 是 exe.dev 的默认 base
+image。它基于 Ubuntu 24.04，面向 developer/agent 使用场景，包含 systemd，
+并预装了比 minimal container image 更完整的一组 apt 工具。已发布镜像位于
+`ghcr.io/lollipopkit/exeuntu`。
+
+## Release Compatibility
+
+Release archives 包含面向 `x86_64` 和 `aarch64` 的 Linux musl binaries，以及
+面向 Intel 和 Apple Silicon 的原生 macOS binaries。Linux release binaries
+使用 vendored native TLS 和 static OpenSSL 构建，运行时不依赖系统里的兼容
+`libssl.so`。CI 会在 release packaging 前验证 Linux musl dist build。
 
 ## exedev-k8s
 

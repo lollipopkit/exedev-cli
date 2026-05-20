@@ -40,6 +40,7 @@ Common operations:
 ```sh
 exedev-ctl new --name p1-a-1 --image ubuntu:22.04 --no-email
 exedev-ctl share port p1-a-1 8080
+exedev-ctl domain add p1-a-1 app.example.com
 exedev-ctl rm p1-a-1
 ```
 
@@ -54,6 +55,21 @@ Detailed documentation:
   from the official exe.dev API, HTTPS token, VM token, and Login with exe docs.
 - [`docs/exedev-automation.md`](docs/exedev-automation.md): exe.dev HTTPS
   `POST /exec`, token generation, and automation boundaries.
+
+## exeuntu
+
+[`exeuntu`](https://github.com/lollipopkit/exeuntu) is the default exe.dev base
+image. It is a developer/agent-oriented Ubuntu 24.04 image with systemd and a
+broader set of apt-installed tools than a minimal container image. Published
+images are available from `ghcr.io/lollipopkit/exeuntu`.
+
+## Release Compatibility
+
+Release archives include Linux musl binaries for `x86_64` and `aarch64`, plus
+native macOS binaries for Intel and Apple Silicon. Linux release binaries are
+built with vendored native TLS and static OpenSSL so they do not require a
+compatible system `libssl.so` at runtime. CI validates the Linux musl dist build
+before release packaging.
 
 ## exedev-k8s
 

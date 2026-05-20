@@ -38,7 +38,7 @@ Check the current environment and scope before proposing changes:
 
 ## Command Selection
 
-Use typed wrappers for supported commands: `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `stat`, `cp`, `resize`, `share`, `team`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
+Use typed wrappers for supported commands: `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
 
 Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper.
 

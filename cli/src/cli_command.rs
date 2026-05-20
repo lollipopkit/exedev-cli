@@ -85,6 +85,7 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
             format!("--disk={}", cmd.disk),
         ]),
         Commands::Share(cmd) => build_share_command(&mut words, &cmd.command),
+        Commands::Domain(cmd) => build_domain_command(&mut words, &cmd.command)?,
         Commands::Team(cmd) => build_team_command(&mut words, &cmd.command),
         Commands::Whoami => words.push("whoami".into()),
         Commands::SshKey(cmd) => build_ssh_key_command(&mut words, &cmd.command),
@@ -168,6 +169,31 @@ fn build_share_command(words: &mut Vec<String>, command: &ShareSubcommand) {
             words.extend(["access".into(), cmd.action.clone(), cmd.vm.clone()]);
         }
     }
+}
+
+fn build_domain_command(words: &mut Vec<String>, command: &DomainSubcommand) -> Result<()> {
+    words.push("domain".into());
+    match command {
+        DomainSubcommand::Add(cmd) => {
+            words.extend(["add".into(), cmd.vm.clone(), cmd.domain.clone()]);
+        }
+        DomainSubcommand::Ls(cmd) => {
+            match (cmd.all, cmd.vm.as_ref()) {
+                (false, None) => bail!("domain ls requires either <vm> or -a"),
+                (true, Some(_)) => bail!("domain ls accepts either <vm> or -a, not both"),
+                _ => {}
+            }
+            words.push("ls".into());
+            if cmd.all {
+                words.push("-a".into());
+            }
+            push_opt(words, cmd.vm.as_ref());
+        }
+        DomainSubcommand::Rm(cmd) => {
+            words.extend(["rm".into(), cmd.vm.clone(), cmd.domain.clone()]);
+        }
+    }
+    Ok(())
 }
 
 fn build_team_command(words: &mut Vec<String>, command: &TeamSubcommand) {
@@ -345,6 +371,35 @@ mod tests {
         assert_eq!(
             shell_join(&built.words),
             "share add mybox user@example.com --message 'check this'"
+        );
+    }
+
+    #[test]
+    fn builds_domain_commands() {
+        let built = command_from(&["exedev-ctl", "domain", "add", "mybox", "app.example.com"]);
+        assert_eq!(shell_join(&built.words), "domain add mybox app.example.com");
+
+        let built = command_from(&["exedev-ctl", "domain", "ls", "mybox"]);
+        assert_eq!(shell_join(&built.words), "domain ls mybox");
+
+        let built = command_from(&["exedev-ctl", "domain", "ls", "-a"]);
+        assert_eq!(shell_join(&built.words), "domain ls -a");
+
+        let built = command_from(&["exedev-ctl", "domain", "rm", "mybox", "app.example.com"]);
+        assert_eq!(shell_join(&built.words), "domain rm mybox app.example.com");
+    }
+
+    #[test]
+    fn rejects_invalid_domain_ls_args() {
+        let cli = Cli::parse_from(["exedev-ctl", "domain", "ls"]);
+        let err = build_command(&cli.command).unwrap_err();
+        assert_eq!(err.to_string(), "domain ls requires either <vm> or -a");
+
+        let cli = Cli::parse_from(["exedev-ctl", "domain", "ls", "-a", "mybox"]);
+        let err = build_command(&cli.command).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "domain ls accepts either <vm> or -a, not both"
         );
     }
 

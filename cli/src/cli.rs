@@ -55,6 +55,8 @@ pub(crate) enum Commands {
     Resize(ResizeCmd),
     /// Share HTTPS VM access.
     Share(ShareCmd),
+    /// Manage custom domains.
+    Domain(DomainCmd),
     /// View and manage your team.
     Team(TeamCmd),
     /// Show current user information.
@@ -249,6 +251,35 @@ pub(crate) struct ShareReceiveEmailCmd {
 pub(crate) struct ShareAccessCmd {
     pub(crate) action: String,
     pub(crate) vm: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DomainCmd {
+    #[command(subcommand)]
+    pub(crate) command: DomainSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DomainSubcommand {
+    /// Register a custom domain for a VM.
+    Add(DomainVmDomainCmd),
+    /// List registered custom domains.
+    Ls(DomainLsCmd),
+    /// Remove a custom domain from a VM.
+    Rm(DomainVmDomainCmd),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DomainVmDomainCmd {
+    pub(crate) vm: String,
+    pub(crate) domain: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DomainLsCmd {
+    #[arg(short = 'a', long = "all")]
+    pub(crate) all: bool,
+    pub(crate) vm: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -171,6 +171,15 @@ exedev-ctl share set-public p1-a-1
 exedev-ctl share set-private p1-a-1
 ```
 
+Manage custom domains after DNS points at the VM:
+
+```sh
+exedev-ctl domain add p1-a-1 app.example.com
+exedev-ctl domain ls p1-a-1
+exedev-ctl domain ls -a
+exedev-ctl domain rm p1-a-1 app.example.com
+```
+
 SSH into a VM:
 
 ```sh
@@ -189,7 +198,7 @@ exedev-ctl exec -- whoami
 The `exedev-ctl` wrapper supports exe.dev token generation:
 
 ```sh
-exedev-ctl ssh-key generate-api-key --label automation --cmds "ls,new,whoami,share show,share port" --exp 1798761600
+exedev-ctl ssh-key generate-api-key --label automation --cmds "ls,new,whoami,share show,share port,domain add,domain ls,domain rm" --exp 1798761600
 ```
 
 For destructive operations, include commands intentionally and narrowly, for example `rm`, `restart`, or `rename` only when needed.

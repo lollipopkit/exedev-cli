@@ -28,10 +28,10 @@ jobs:
         include:
           - platform: linux-amd64
             os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - platform: linux-arm64
             os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
           - platform: macos-amd64
             os: macos-15-intel
             target: x86_64-apple-darwin
@@ -55,6 +55,23 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Configure Linux musl build
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          echo "OPENSSL_STATIC=1" >> "${GITHUB_ENV}"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)
+              echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "${GITHUB_ENV}"
+              ;;
+            aarch64-unknown-linux-musl)
+              echo "CC_aarch64_unknown_linux_musl=musl-gcc" >> "${GITHUB_ENV}"
+              ;;
+          esac
+
       - name: Build optimized release binaries
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
 
@@ -71,10 +88,17 @@ jobs:
 
           archive="exedev-clis-${tag}-${{ matrix.platform }}.tar.gz"
           mkdir -p package dist
-          cp "target/${{ matrix.target }}/dist/exedev-ctl" package/
-          cp "target/${{ matrix.target }}/dist/exedev-k8s" package/
+
+          cp "target/${{ matrix.target }}/dist/exedev-ctl" "package/exedev-ctl"
+          cp "target/${{ matrix.target }}/dist/exedev-k8s" "package/exedev-k8s"
+          if [[ "${{ matrix.os }}" == ubuntu-* ]]; then
+            strip --strip-all package/exedev-ctl package/exedev-k8s
+          else
+            strip -x package/exedev-ctl package/exedev-k8s
+          fi
+
           cp README.md README.zh-CN.md LICENSE .env.example fleet.example.yaml package/
-          tar -czf "dist/${archive}" -C package .
+          tar -cf - -C package . | gzip -9 -n > "dist/${archive}"
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload archive artifact
