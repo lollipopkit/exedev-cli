@@ -92,6 +92,20 @@ If the pool is isolated, it also applies:
 exedev.dev/pool=project1-a:NoSchedule
 ```
 
+Optional VM sizing and exe.dev tags can be set in `defaults`, on
+`cluster.controlPlane`, or per pool. `cpu` and `memory` are forwarded to
+`new --cpu`/`new --memory` (pool-level values override `defaults`); `tags`
+are exe.dev VM tags forwarded to `new --tag` (pool-level tags are appended
+to `defaults.tags`). These are distinct from Kubernetes `labels`.
+
+```yaml
+defaults:
+  cpu: 2
+  memory: 4GB
+  tags:
+    - k8s
+```
+
 For the workload-side scheduling pattern, see
 [`../docs/node-labeling.md`](../docs/node-labeling.md).
 

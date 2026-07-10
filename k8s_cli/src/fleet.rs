@@ -30,6 +30,10 @@ pub(crate) struct ControlPlane {
     pub(crate) nodes: usize,
     pub(crate) vm_prefix: String,
     pub(crate) image: Option<String>,
+    pub(crate) cpu: Option<u32>,
+    pub(crate) memory: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -38,6 +42,11 @@ pub(crate) struct Defaults {
     pub(crate) kubernetes: Option<String>,
     pub(crate) isolated: Option<bool>,
     pub(crate) image: Option<String>,
+    pub(crate) cpu: Option<u32>,
+    pub(crate) memory: Option<String>,
+    // exe.dev VM tags passed to `new --tag`, distinct from Kubernetes labels.
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +66,10 @@ pub(crate) struct TaskPool {
     pub(crate) vm_prefix: String,
     pub(crate) isolated: Option<bool>,
     pub(crate) image: Option<String>,
+    pub(crate) cpu: Option<u32>,
+    pub(crate) memory: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
     #[serde(default)]
     pub(crate) labels: BTreeMap<String, String>,
 }
@@ -68,6 +81,10 @@ pub(crate) struct SparePool {
     pub(crate) vm_prefix: String,
     pub(crate) isolated: Option<bool>,
     pub(crate) image: Option<String>,
+    pub(crate) cpu: Option<u32>,
+    pub(crate) memory: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
     #[serde(default)]
     pub(crate) labels: BTreeMap<String, String>,
 }
@@ -85,6 +102,10 @@ pub(crate) struct NodeSpec {
     pub(crate) role: NodeRole,
     pub(crate) pool: String,
     pub(crate) image: String,
+    pub(crate) cpu: Option<u32>,
+    pub(crate) memory: Option<String>,
+    // exe.dev VM tags passed to `new --tag`, distinct from Kubernetes labels.
+    pub(crate) tags: Vec<String>,
     pub(crate) labels: BTreeMap<String, String>,
     pub(crate) taint: Option<String>,
 }
@@ -130,6 +151,12 @@ impl FleetFile {
                 bail!("fleet requests {worker_count} worker VMs but workerVmBudget is {budget}");
             }
         }
+        if self.defaults.cpu == Some(0) {
+            bail!("defaults.cpu must be greater than 0");
+        }
+        if self.cluster.control_plane.cpu == Some(0) {
+            bail!("cluster.controlPlane.cpu must be greater than 0");
+        }
         for (project_name, project) in &self.projects {
             for (task_name, task) in &project.tasks {
                 if task.nodes == 0 {
@@ -137,6 +164,9 @@ impl FleetFile {
                 }
                 if task.vm_prefix.trim().is_empty() {
                     bail!("projects.{project_name}.tasks.{task_name}.vmPrefix must not be empty");
+                }
+                if task.cpu == Some(0) {
+                    bail!("projects.{project_name}.tasks.{task_name}.cpu must be greater than 0");
                 }
             }
         }
@@ -146,6 +176,9 @@ impl FleetFile {
             }
             if pool.vm_prefix.trim().is_empty() {
                 bail!("sparePools.{pool_name}.vmPrefix must not be empty");
+            }
+            if pool.cpu == Some(0) {
+                bail!("sparePools.{pool_name}.cpu must be greater than 0");
             }
         }
         Ok(())
@@ -167,6 +200,9 @@ impl FleetFile {
                 .image
                 .clone()
                 .unwrap_or_else(|| default_image.clone()),
+            cpu: self.resolve_cpu(self.cluster.control_plane.cpu),
+            memory: self.resolve_memory(self.cluster.control_plane.memory.as_ref()),
+            tags: self.merge_tags(&self.cluster.control_plane.tags),
             labels: control_labels,
             taint: None,
         });
@@ -184,6 +220,9 @@ impl FleetFile {
                         role: NodeRole::Worker,
                         pool: pool.clone(),
                         image: task.image.clone().unwrap_or_else(|| default_image.clone()),
+                        cpu: self.resolve_cpu(task.cpu),
+                        memory: self.resolve_memory(task.memory.as_ref()),
+                        tags: self.merge_tags(&task.tags),
                         labels,
                         taint: self
                             .is_isolated(task.isolated)
@@ -202,6 +241,9 @@ impl FleetFile {
                     role: NodeRole::Spare,
                     pool: pool_name.clone(),
                     image: pool.image.clone().unwrap_or_else(|| default_image.clone()),
+                    cpu: self.resolve_cpu(pool.cpu),
+                    memory: self.resolve_memory(pool.memory.as_ref()),
+                    tags: self.merge_tags(&pool.tags),
                     labels,
                     taint: self
                         .is_isolated(pool.isolated)
@@ -223,6 +265,25 @@ impl FleetFile {
             .image
             .clone()
             .unwrap_or_else(|| DEFAULT_IMAGE.into())
+    }
+
+    fn resolve_cpu(&self, value: Option<u32>) -> Option<u32> {
+        value.or(self.defaults.cpu)
+    }
+
+    fn resolve_memory(&self, value: Option<&String>) -> Option<String> {
+        value.cloned().or_else(|| self.defaults.memory.clone())
+    }
+
+    /// Default tags apply to every VM; pool-level tags are appended after them.
+    fn merge_tags(&self, tags: &[String]) -> Vec<String> {
+        let mut merged = self.defaults.tags.clone();
+        for tag in tags {
+            if !merged.contains(tag) {
+                merged.push(tag.clone());
+            }
+        }
+        merged
     }
 
     fn is_isolated(&self, value: Option<bool>) -> bool {
@@ -291,6 +352,10 @@ defaults:
   network: tailscale
   kubernetes: k3s
   isolated: true
+  cpu: 2
+  memory: 4GB
+  tags:
+    - k8s
 projects:
   p1:
     tasks:
@@ -298,6 +363,10 @@ projects:
         nodes: 2
         replicas: 2
         vmPrefix: p1-a
+        cpu: 4
+        memory: 16GB
+        tags:
+          - prod
 sparePools:
   shared:
     nodes: 1
@@ -331,6 +400,53 @@ sparePools:
             .find(|node| node.name == "shared-1")
             .unwrap();
         assert_eq!(shared.taint, None);
+    }
+
+    #[test]
+    fn resolves_resources_and_merges_tags() {
+        let plan = sample().to_plan();
+
+        // Pool-level values override defaults; tags are the union.
+        let worker = plan
+            .nodes
+            .iter()
+            .find(|node| node.name == "p1-a-1")
+            .unwrap();
+        assert_eq!(worker.cpu, Some(4));
+        assert_eq!(worker.memory.as_deref(), Some("16GB"));
+        assert_eq!(worker.tags, vec!["k8s".to_string(), "prod".to_string()]);
+
+        // Pools without overrides inherit the defaults.
+        let shared = plan
+            .nodes
+            .iter()
+            .find(|node| node.name == "shared-1")
+            .unwrap();
+        assert_eq!(shared.cpu, Some(2));
+        assert_eq!(shared.memory.as_deref(), Some("4GB"));
+        assert_eq!(shared.tags, vec!["k8s".to_string()]);
+
+        let control = plan.control_plane().unwrap();
+        assert_eq!(control.cpu, Some(2));
+        assert_eq!(control.memory.as_deref(), Some("4GB"));
+    }
+
+    #[test]
+    fn rejects_zero_cpu() {
+        let fleet: FleetFile = serde_yaml::from_str(
+            r#"
+cluster:
+  name: demo
+  controlPlane:
+    nodes: 1
+    vmPrefix: cp
+defaults:
+  cpu: 0
+"#,
+        )
+        .unwrap();
+        let err = fleet.validate().unwrap_err();
+        assert_eq!(err.to_string(), "defaults.cpu must be greater than 0");
     }
 
     #[test]

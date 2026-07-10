@@ -44,12 +44,34 @@ fn builds_exedev_new_command() {
         role: NodeRole::Worker,
         pool: "project1-a".into(),
         image: "ubuntu:22.04".into(),
+        cpu: None,
+        memory: None,
+        tags: Vec::new(),
         labels: BTreeMap::new(),
         taint: None,
     };
     assert_eq!(
         exe_new_command(&node),
         "new --name p1-a-1 --image ubuntu:22.04 --no-email"
+    );
+}
+
+#[test]
+fn builds_exedev_new_command_with_resources_and_tags() {
+    let node = NodeSpec {
+        name: "p1-a-1".into(),
+        role: NodeRole::Worker,
+        pool: "project1-a".into(),
+        image: "exeuntu".into(),
+        cpu: Some(4),
+        memory: Some("16GB".into()),
+        tags: vec!["k8s".into(), "prod".into()],
+        labels: BTreeMap::new(),
+        taint: None,
+    };
+    assert_eq!(
+        exe_new_command(&node),
+        "new --name p1-a-1 --image exeuntu --cpu 4 --memory 16GB --tag k8s --tag prod --no-email"
     );
 }
 
