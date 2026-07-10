@@ -276,9 +276,10 @@ impl FleetFile {
     }
 
     /// Default tags apply to every VM; pool-level tags are appended after them.
+    /// The result is deduplicated in first-occurrence order.
     fn merge_tags(&self, tags: &[String]) -> Vec<String> {
-        let mut merged = self.defaults.tags.clone();
-        for tag in tags {
+        let mut merged = Vec::new();
+        for tag in self.defaults.tags.iter().chain(tags) {
             if !merged.contains(tag) {
                 merged.push(tag.clone());
             }
@@ -347,6 +348,9 @@ cluster:
   controlPlane:
     nodes: 1
     vmPrefix: cp
+    tags:
+      - cp
+      - k8s
   workerVmBudget: 3
 defaults:
   network: tailscale
@@ -355,6 +359,7 @@ defaults:
   cpu: 2
   memory: 4GB
   tags:
+    - k8s
     - k8s
 projects:
   p1:
@@ -416,7 +421,8 @@ sparePools:
         assert_eq!(worker.memory.as_deref(), Some("16GB"));
         assert_eq!(worker.tags, vec!["k8s".to_string(), "prod".to_string()]);
 
-        // Pools without overrides inherit the defaults.
+        // Pools without overrides inherit the defaults; the duplicate default
+        // tag in the sample is deduplicated.
         let shared = plan
             .nodes
             .iter()
@@ -426,15 +432,18 @@ sparePools:
         assert_eq!(shared.memory.as_deref(), Some("4GB"));
         assert_eq!(shared.tags, vec!["k8s".to_string()]);
 
+        // Control-plane tags merge after the defaults, dropping duplicates.
         let control = plan.control_plane().unwrap();
         assert_eq!(control.cpu, Some(2));
         assert_eq!(control.memory.as_deref(), Some("4GB"));
+        assert_eq!(control.tags, vec!["k8s".to_string(), "cp".to_string()]);
     }
 
     #[test]
     fn rejects_zero_cpu() {
-        let fleet: FleetFile = serde_yaml::from_str(
-            r#"
+        let cases = [
+            (
+                r#"
 cluster:
   name: demo
   controlPlane:
@@ -443,10 +452,57 @@ cluster:
 defaults:
   cpu: 0
 "#,
-        )
-        .unwrap();
-        let err = fleet.validate().unwrap_err();
-        assert_eq!(err.to_string(), "defaults.cpu must be greater than 0");
+                "defaults.cpu must be greater than 0",
+            ),
+            (
+                r#"
+cluster:
+  name: demo
+  controlPlane:
+    nodes: 1
+    vmPrefix: cp
+    cpu: 0
+"#,
+                "cluster.controlPlane.cpu must be greater than 0",
+            ),
+            (
+                r#"
+cluster:
+  name: demo
+  controlPlane:
+    nodes: 1
+    vmPrefix: cp
+projects:
+  p1:
+    tasks:
+      a:
+        nodes: 1
+        vmPrefix: p1-a
+        cpu: 0
+"#,
+                "projects.p1.tasks.a.cpu must be greater than 0",
+            ),
+            (
+                r#"
+cluster:
+  name: demo
+  controlPlane:
+    nodes: 1
+    vmPrefix: cp
+sparePools:
+  shared:
+    nodes: 1
+    vmPrefix: shared
+    cpu: 0
+"#,
+                "sparePools.shared.cpu must be greater than 0",
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let fleet: FleetFile = serde_yaml::from_str(yaml).unwrap();
+            let err = fleet.validate().unwrap_err();
+            assert_eq!(err.to_string(), expected);
+        }
     }
 
     #[test]

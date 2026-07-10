@@ -297,10 +297,11 @@ This repository uses the exe.dev HTTPS command API through
 `EXE_DEV_API_KEY` for non-interactive VM management:
 
 - `exedev-ctl` wraps the exe.dev command surface, including `ls`, `new`, `rm`,
-  `restart`, `rename`, `tag`, `stat`, `cp`, `resize`, `share` (show, port,
-  set-public, set-private, add, remove, add-link, remove-link, receive-email,
-  access), `domain` (add, ls, rm), `team`, `whoami`, `ssh-key`, `set-region`,
-  `integrations`, `billing`, `shelley`, `browser`, and raw `exec`.
+  `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share` (show,
+  port, set-public, set-private, add, remove, add-link, remove-link,
+  receive-email, access), `domain` (add, ls, rm), `team`, `invite`, `whoami`,
+  `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, and
+  raw `exec`.
 - `exedev-k8s` uses exe.dev VM commands as the infrastructure layer for k3s
   fleet bootstrapping; against exe.dev itself it only needs `ls`, `new`, and
   `rm` (node provisioning happens over direct SSH to the VMs).
@@ -323,7 +324,7 @@ For new automation tokens, grant only the commands that the workflow needs. A
 minimal `exedev-k8s` fleet token needs:
 
 ```json
-{"cmds":["ls","new","rm","whoami"],"exp":1798761600}
+{"cmds":["ls","new","rm"],"exp":1798761600}
 ```
 
 A broader VM lifecycle token for `exedev-ctl` workflows typically adds:

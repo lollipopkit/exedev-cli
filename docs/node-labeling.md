@@ -1,10 +1,9 @@
 # Node Labels and Taints
 
-Every exe.dev VM that joins the cluster receives deterministic labels.
-`exedev-k8s bootstrap` applies them automatically from `fleet.yaml`; the
-manual `kubectl` commands below are only needed for out-of-band nodes or
-repairs (`exedev-k8s status` reports `labels=ok taint=ok` when a node
-matches its spec).
+Every VM created or managed by `exedev-k8s bootstrap` receives deterministic
+labels applied automatically from `fleet.yaml`; the manual `kubectl` commands
+below are only needed for out-of-band nodes or repairs (`exedev-k8s status`
+reports `labels=ok taint=ok` when a node matches its spec).
 
 ## Label scheme
 
