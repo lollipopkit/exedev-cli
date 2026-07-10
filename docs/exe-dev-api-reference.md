@@ -1,7 +1,7 @@
 # exe.dev API Reference Notes
 
 This file records the exe.dev API documentation that this repository depends
-on. It was last checked on 2026-05-18 from these source pages:
+on. It was last checked on 2026-07-10 from these source pages:
 
 - <https://exe.dev/docs/api>
 - <https://exe.dev/docs/login-with-exe>
@@ -9,11 +9,15 @@ on. It was last checked on 2026-05-18 from these source pages:
 - <https://exe.dev/docs/https-api-local-key>
 - <https://exe.dev/docs/https-tokens-for-vms>
 
+Each page is also available as raw markdown by appending `.md` to the URL,
+for example <https://exe.dev/docs/https-api.md>. The full command list lives
+in the CLI reference at <https://exe.dev/docs/section/10-cli-reference>.
+
 ## API shape
 
 exe.dev exposes two programmatic access styles:
 
-1. SSH command automation:
+1. SSH command automation (the primary API):
 
    ```sh
    ssh exe.dev ls --json
@@ -31,6 +35,19 @@ exe.dev command that would be typed into `ssh exe.dev` or run through
 `ssh exe.dev <command>`. API responses enable JSON output by default, equivalent
 to passing `--json`.
 
+Example `ls --json` VM object shape:
+
+```json
+{
+  "https_url": "https://bloggy.exe.xyz",
+  "region": "lon",
+  "region_display": "London, UK",
+  "ssh_dest": "bloggy.exe.xyz",
+  "status": "running",
+  "vm_name": "bloggy"
+}
+```
+
 Minimal HTTPS request:
 
 ```sh
@@ -46,6 +63,9 @@ Operational limits:
 - Request bodies are limited to 64KB.
 - Commands time out after 30 seconds.
 - Commands that require interactive input do not fit this API.
+
+Any command can be introspected without side effects by passing `--help`
+(for example `new --help`), which returns its flags and examples as JSON.
 
 ## exe.dev API tokens
 
@@ -81,16 +101,21 @@ it.
 
 Supported top-level permission fields:
 
-- `exp`: UTC Unix timestamp after which the token is invalid.
+- `exp`: UTC Unix timestamp after which the token is invalid. The default is
+  the distant future (never expires); exe.dev strongly recommends always
+  setting `exp`.
 - `nbf`: UTC Unix timestamp before which the token is not valid yet.
-- `cmds`: exe.dev command names this token may run.
-- `ctx`: signed JSON context uninterpreted by exe.dev.
+- `cmds`: exe.dev command names this token may run. `cmds` controls command
+  names only; flags, arguments, and options (like `--json`) are always allowed
+  when the base command is permitted.
+- `ctx`: signed JSON context uninterpreted by exe.dev. Must itself be valid
+  JSON complying with the restrictions below.
 
 The empty object `{}` uses defaults. For least-privilege automation, specify
-`cmds` explicitly. Subcommands must be granted explicitly; allowing `ssh-key`
-does not allow `ssh-key list`.
+`cmds` explicitly. Subcommands must be granted explicitly as a single string
+such as `"ssh-key list"`; allowing `ssh-key` does not allow `ssh-key list`.
 
-Useful default commands include:
+The default `cmds` grant is:
 
 - `help`
 - `ls`
@@ -105,16 +130,20 @@ Useful default commands include:
 Commands such as `rm`, `rename`, `restart`, `share port`, `share set-public`,
 and `share set-private` should be added only when automation needs them.
 
-Permission JSON restrictions:
+Permission JSON restrictions (also enforced inside `ctx`):
 
-- Compact JSON is recommended.
+- Compact JSON is recommended (pipe through `jq -c`).
 - No leading/trailing whitespace.
 - No newlines or null bytes.
-- No duplicate keys.
+- No duplicate keys, at any level.
 - Only `exp`, `nbf`, `cmds`, and `ctx` are allowed at the top level.
-- `exp` and `nbf` must be integer timestamps between 2000-01-01 and
-  2100-01-01 UTC.
+- `exp` and `nbf` must be plain integers (no decimals, no exponents) between
+  2000-01-01 (946684800) and 2100-01-01 (4102444800) UTC.
 - The whole token must not exceed 8KB.
+
+There is no built-in replay protection (no nonce or `jti`). Use short-lived
+tokens (small `exp`) to limit the replay window, and separate SSH keys per
+token family for revocability.
 
 Short opaque `exe1` tokens can be issued from a valid `exe0` token:
 
@@ -128,19 +157,25 @@ For a VM-scoped token, validate the source token against the VM:
 ssh exe.dev exe0-to-exe1 --vm=vm-name "$EXE_DEV_API_KEY"
 ```
 
+`exe1` tokens work everywhere `exe0` tokens work, in exactly the same way. An
+`exe1` token is validated through its underlying `exe0` token on every use; to
+revoke an `exe1` token, revoke the underlying `exe0` token.
+
 ## HTTPS error handling
 
 Common responses from `POST /exec`:
 
-- `400`: request body is empty, missing, or syntactically invalid.
+- `400`: request body is empty, missing, or has invalid command syntax (e.g.
+  unbalanced quotes).
 - `401`: token is malformed, expired, signed by an unknown key, or fails
   signature verification.
 - `403`: token permissions do not allow the requested command.
-- `404`: unknown exe.dev command.
+- `404`: unknown exe.dev command; check `ssh exe.dev help` for the full list.
 - `405`: non-POST method.
 - `413`: request body exceeds 64KB.
-- `422`: command ran and returned a non-zero exit code.
-- `429`: per-key rate limit.
+- `422`: command ran and returned a non-zero exit code; the body contains the
+  error message.
+- `429`: per-key rate limit; use separate SSH keys for independent workloads.
 - `500`: unexpected server-side error.
 - `504`: command exceeded the 30-second timeout.
 
@@ -148,9 +183,11 @@ Debug checklist for `401`:
 
 - Confirm the signing public key is listed with `ssh exe.dev ssh-key list`.
 - Confirm `exp` is not in the past.
-- Confirm the exact compact JSON payload was signed.
+- Confirm the exact compact JSON payload was signed byte-for-byte; avoid
+  editors that add trailing newlines.
 - Use a private key file with `ssh-keygen -Y sign -f`; an agent-only key is not
-  enough for this command.
+  enough for this command. If the key only lives in `ssh-agent`, export the
+  public part with `ssh-add -L` and use the private key file directly.
 
 Debug checklist for `403`:
 
@@ -161,8 +198,8 @@ Debug checklist for `403`:
 ## VM HTTPS tokens
 
 The exe.dev HTTPS auth proxy can accept bearer tokens for programmatic access to
-individual VM HTTPS endpoints. This is separate from authenticating to
-`POST https://exe.dev/exec`.
+individual VM HTTPS endpoints (API servers, `git push` over HTTPS). This is
+separate from authenticating to `POST https://exe.dev/exec`.
 
 Generate a VM token through exe.dev:
 
@@ -180,8 +217,9 @@ export SIG=$(printf '%s' "$PERMISSIONS" | ssh-keygen -Y sign -f ~/.ssh/exe_dev_a
 VM token differences:
 
 - The signing namespace scopes the token to one VM.
-- The token payload `ctx` is forwarded to the VM HTTP server as
-  `X-ExeDev-Token-Ctx`.
+- The token payload `ctx` is forwarded verbatim to the VM HTTP server as
+  `X-ExeDev-Token-Ctx`. Its contents are signed, so the VM server can use them
+  for its own authorization rules.
 
 Preferred VM proxy authentication header:
 
@@ -215,7 +253,10 @@ git clone https://myvm.exe.xyz/repo.git
 ## Login with exe
 
 Applications served through the exe.dev HTTP proxy can use exe.dev
-authentication instead of managing their own login system.
+authentication instead of managing their own login system. This is
+complementary with sharing: public sites can bounce users through the login
+URL to require an email address, while private sites always carry the
+authentication headers because access requires the site to have been shared.
 
 When a request is authenticated by exe.dev, the proxy adds:
 
@@ -229,8 +270,8 @@ Special URLs:
 
 - `https://vmname.exe.xyz/__exe.dev/login?redirect={path}` redirects the user to
   log in, then back to `{path}`.
-- `POST https://vmname.exe.xyz/__exe.dev/logout` logs the user out for that
-  domain.
+- `POST https://vmname.exe.xyz/__exe.dev/logout` logs the user out, removing
+  the cookie for that domain.
 
 Local development can simulate these headers with a reverse proxy, for example:
 
@@ -242,6 +283,10 @@ mitmdump \
   --set modify_headers='/~q/X-Exedev-Userid/usr1234'
 ```
 
+Server-side authorization can gate on `X-ExeDev-Email` directly; the upstream
+docs include an nginx example that returns `403` unless
+`$http_x_exedev_email` matches an allowlist.
+
 VM services must not trust user-controlled copies of these headers when traffic
 can bypass the exe.dev proxy. Bind private services to localhost or firewall
 direct VM ports if the header values are part of authorization.
@@ -251,9 +296,14 @@ direct VM ports if the header values are part of authorization.
 This repository uses the exe.dev HTTPS command API through
 `EXE_DEV_API_KEY` for non-interactive VM management:
 
-- `exedev-ctl` wraps individual exe.dev commands.
+- `exedev-ctl` wraps the exe.dev command surface, including `ls`, `new`, `rm`,
+  `restart`, `rename`, `tag`, `stat`, `cp`, `resize`, `share` (show, port,
+  set-public, set-private, add, remove, add-link, remove-link, receive-email,
+  access), `domain` (add, ls, rm), `team`, `whoami`, `ssh-key`, `set-region`,
+  `integrations`, `billing`, `shelley`, `browser`, and raw `exec`.
 - `exedev-k8s` uses exe.dev VM commands as the infrastructure layer for k3s
-  fleet bootstrapping.
+  fleet bootstrapping; against exe.dev itself it only needs `ls`, `new`, and
+  `rm` (node provisioning happens over direct SSH to the VMs).
 
 For local scripts and manual debugging, prefer:
 
@@ -270,7 +320,13 @@ curl -X POST https://exe.dev/exec \
 ```
 
 For new automation tokens, grant only the commands that the workflow needs. A
-typical VM lifecycle token for this repository needs at least:
+minimal `exedev-k8s` fleet token needs:
+
+```json
+{"cmds":["ls","new","rm","whoami"],"exp":1798761600}
+```
+
+A broader VM lifecycle token for `exedev-ctl` workflows typically adds:
 
 ```json
 {
@@ -278,11 +334,14 @@ typical VM lifecycle token for this repository needs at least:
     "ls",
     "new",
     "rm",
+    "restart",
+    "rename",
     "whoami",
     "share show",
     "share port",
     "share set-public",
-    "share set-private"
+    "share set-private",
+    "domain ls"
   ],
   "exp": 1798761600
 }
