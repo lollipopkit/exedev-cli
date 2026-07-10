@@ -24,7 +24,7 @@ If `exedev-ctl` is not installed, direct users to the latest GitHub Release:
 https://github.com/lollipopkit/exedev-cli/releases/latest
 ```
 
-Release archives are named `exedev-clis-<tag>-<platform>.tar.gz` and include the `exedev-ctl` binary.
+Release archives are named `exedev-clis-<tag>-<platform>.tar.gz` and include both the `exedev-ctl` and `exedev-k8s` binaries; archive member names carry a `./` prefix (extract with `./exedev-ctl`).
 
 ## Before Acting
 
@@ -38,7 +38,7 @@ Check the current environment and scope before proposing changes:
 
 ## Command Selection
 
-Use typed wrappers for supported commands: `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
+Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
 
 Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper.
 

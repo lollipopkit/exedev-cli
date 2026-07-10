@@ -50,8 +50,13 @@ fn is_dangerous(command: &str) -> bool {
         "integrations remove ",
         "integrations setup ",
         "integrations detach ",
+        "integrations edit ",
         "team remove ",
-        "billing update",
+        "team role ",
+        "team transfer ",
+        "team disable",
+        "domain rm ",
+        "billing capacity",
     ];
     prefixes
         .iter()
@@ -82,6 +87,13 @@ mod tests {
         assert!(is_dangerous("share set-public vm1"));
         assert!(is_dangerous("share add-link vm1"));
         assert!(is_dangerous("ssh-key remove abc"));
+        assert!(is_dangerous("team disable --yes"));
+        assert!(is_dangerous("team transfer vm1 a@b.c"));
+        assert!(is_dangerous("domain rm vm1 app.example.com"));
+        assert!(is_dangerous("integrations edit myproxy --target x"));
+        assert!(is_dangerous("billing capacity"));
         assert!(!is_dangerous("ls"));
+        assert!(!is_dangerous("team members"));
+        assert!(!is_dangerous("domain ls -a"));
     }
 }

@@ -180,10 +180,11 @@ fn print_bootstrap_plan(
         if !current.contains(&node.name) {
             any = true;
             println!(
-                "  - {} [{}] image={}",
+                "  - {} [{}] image={}{}",
                 output::vm(&node.name),
                 output::role(role_name(node.role)),
-                output::label(&node.image)
+                output::label(&node.image),
+                output::label(node_resource_suffix(node))
             );
         }
     }
@@ -611,14 +612,38 @@ fn kubeconfig_for_bootstrap(
 }
 
 fn exe_new_command(node: &NodeSpec) -> String {
-    shell::shell_join(&[
+    let mut words: Vec<String> = vec![
         "new".into(),
         "--name".into(),
         node.name.clone(),
         "--image".into(),
         node.image.clone(),
-        "--no-email".into(),
-    ])
+    ];
+    if let Some(cpu) = node.cpu {
+        words.extend(["--cpu".into(), cpu.to_string()]);
+    }
+    if let Some(memory) = &node.memory {
+        words.extend(["--memory".into(), memory.clone()]);
+    }
+    for tag in &node.tags {
+        words.extend(["--tag".into(), tag.clone()]);
+    }
+    words.push("--no-email".into());
+    shell::shell_join(&words)
+}
+
+fn node_resource_suffix(node: &NodeSpec) -> String {
+    let mut suffix = String::new();
+    if let Some(cpu) = node.cpu {
+        suffix.push_str(&format!(" cpu={cpu}"));
+    }
+    if let Some(memory) = &node.memory {
+        suffix.push_str(&format!(" memory={memory}"));
+    }
+    if !node.tags.is_empty() {
+        suffix.push_str(&format!(" tags=[{}]", node.tags.join(",")));
+    }
+    suffix
 }
 
 fn is_vm_name_unavailable_error(err: &anyhow::Error, vm_name: &str) -> bool {

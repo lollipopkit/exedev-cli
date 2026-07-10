@@ -3,6 +3,10 @@
 # nodes = number of exe.dev VMs reserved for this project/task pool.
 # replicas = default Kubernetes Pod replica count for workloads in this pool.
 # isolated = whether to add a NoSchedule taint so only matching workloads run here.
+# cpu / memory = optional VM sizing forwarded to `new --cpu` / `new --memory`;
+#   pool-level values override defaults.
+# tags = optional exe.dev VM tags forwarded to `new --tag` (distinct from
+#   Kubernetes labels); pool-level tags are appended to defaults.tags.
 
 cluster:
   name: exedev-main
@@ -16,6 +20,10 @@ defaults:
   kubernetes: k3s
   image: exeuntu
   isolated: true
+  # cpu: 2
+  # memory: 4GB
+  # tags:
+  #   - k8s
 
 projects:
   project1:
@@ -24,6 +32,10 @@ projects:
         nodes: 1
         replicas: 1
         vmPrefix: p1-a
+        # cpu: 4
+        # memory: 16GB
+        # tags:
+        #   - prod
       b:
         nodes: 2
         replicas: 2
