@@ -1,6 +1,6 @@
 [package]
 name = "exedev-ctl"
-version = "0.1.10"
+version = "0.1.11"
 description = "A Rust command-line client for managing exe.dev VMs over SSH or HTTPS."
 readme = "README.md"
 edition.workspace = true

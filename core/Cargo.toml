@@ -1,6 +1,6 @@
 [package]
 name = "exedev-cli-core"
-version = "0.1.10"
+version = "0.1.11"
 description = "Shared client, environment, shell, and terminal utilities for exe.dev Rust CLIs."
 readme = "../README.md"
 edition.workspace = true

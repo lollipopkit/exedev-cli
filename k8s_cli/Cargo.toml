@@ -1,6 +1,6 @@
 [package]
 name = "exedev-k8s"
-version = "0.1.10"
+version = "0.1.11"
 description = "A Kubernetes fleet management CLI for bootstrapping k3s clusters on exe.dev VMs."
 readme = "README.md"
 edition.workspace = true
