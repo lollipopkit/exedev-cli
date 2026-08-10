@@ -77,11 +77,15 @@ jobs:
       # rather than the tag it ships under.
       - name: Sync crate versions with release tag
         shell: bash
+        env:
+          # Passed through the environment rather than interpolated into the script,
+          # so a crafted dispatch input cannot inject shell commands.
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag_name }}"
+            tag="${INPUT_TAG_NAME}"
           fi
           scripts/release/set-version.sh "${tag}"
 
@@ -91,12 +95,14 @@ jobs:
       - name: Package release archive
         id: package
         shell: bash
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
 
           tag="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag_name }}"
+            tag="${INPUT_TAG_NAME}"
           fi
 
           archive="exedev-clis-${tag}-${{ matrix.platform }}.tar.gz"
@@ -139,11 +145,13 @@ jobs:
       - name: Resolve release tag
         id: meta
         shell: bash
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag_name }}"
+            tag="${INPUT_TAG_NAME}"
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 

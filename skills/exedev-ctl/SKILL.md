@@ -41,7 +41,7 @@ Check the current environment and scope before proposing changes:
 
 Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `pool`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
 
-Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper. `billing provider link` and `exe0-to-exe1` have no wrapper on purpose: both take a token as an argument, so run them through `exec --` or `ssh exe.dev` and keep the token out of persisted history.
+Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper. `billing provider link` and `exe0-to-exe1` have no wrapper on purpose: both are one-time onboarding steps, and both take a token as an argument, which a wrapper would not make safer. Expanding a variable such as `"$TOKEN"` keeps the literal out of shell history, but the token still appears in local process arguments either way; say so rather than presenting `exec` or SSH as protection.
 
 Use `--json` when output must be parsed, compared, or included in automation.
 

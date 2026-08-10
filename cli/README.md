@@ -167,11 +167,16 @@ grant-support-root exit exec
 `exec` is the fallback command for future exe.dev commands that do not yet have
 a typed wrapper.
 
-Two documented commands are intentionally left to `exec`, because each takes a
-secret as an argument and a typed wrapper would only make it easier to leak it
-into shell history and the process list:
+Two documented commands are intentionally left to `exec`. Both are one-time
+onboarding steps with no automation value, and both take a token as a positional
+argument or flag value, which a typed wrapper would not make any safer:
 
 ```sh
-exedev-ctl exec -- billing provider link aws --token=...
+exedev-ctl exec -- billing provider link aws --token="$MARKETPLACE_TOKEN"
 exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
 ```
+
+Expanding a variable keeps the token literal out of your shell history, but the
+expanded value still appears in the process arguments of the local `exedev-ctl`
+and `ssh` processes, where any local process running as your user can read it.
+exe.dev exposes no argument-free input path for these two commands.

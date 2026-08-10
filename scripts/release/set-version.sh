@@ -27,7 +27,15 @@ fi
 
 VERSION="${VERSION#v}"
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+# semver.org's reference grammar. The looser "digits, dots and dashes" shape this
+# replaces rejected a valid tag like 1.2.3-rc.1+build.5, because build metadata can
+# follow a prerelease, and accepted invalid ones like 01.2.3, which cargo refuses
+# later in the release with a much less obvious error.
+SEMVER_NUM='(0|[1-9][0-9]*)'
+SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
+
+if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
   echo "not a semantic version: $VERSION" >&2
   exit 1
 fi

@@ -164,10 +164,15 @@ grant-support-root exit exec
 
 `exec` 是未来 exe.dev commands 尚未提供 typed wrapper 时的 fallback command。
 
-有两个已文档化的 command 不提供 typed wrapper：它们都以 argument 传递 secret，
-包装后只会更容易把 secret 写进 shell history 和进程表。
+有两个已文档化的 command 不提供 typed wrapper：它们都是一次性接入操作，没有
+automation 价值，并且都以 argument 传递 token —— 包装成 typed wrapper 并不会让它
+更安全。
 
 ```sh
-exedev-ctl exec -- billing provider link aws --token=...
+exedev-ctl exec -- billing provider link aws --token="$MARKETPLACE_TOKEN"
 exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
 ```
+
+用变量展开可以避免 token 字面量写进 shell history，但展开后的值仍然出现在本地
+`exedev-ctl` 和 `ssh` 进程的 arguments 中，同一用户下的任何本地进程都能读到。
+exe.dev 对这两个 command 没有提供不经过 argument 的输入方式。

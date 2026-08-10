@@ -270,9 +270,19 @@ exedev-ctl exec -- whoami
 ```
 
 `billing provider link` and `exe0-to-exe1` have no typed wrapper on purpose:
-each takes a token as an argument. Run them through `exec --` or `ssh exe.dev`
-so the token is supplied from an environment variable rather than a stored
-wrapper invocation.
+both are one-time onboarding steps, and each takes a token as an argument, which
+a wrapper would not make safer.
+
+```sh
+exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
+```
+
+Expanding a variable avoids writing the token literal into shell history. It
+does not hide the token from the local process list: the expanded value is
+visible in the arguments of the `exedev-ctl` and `ssh` processes to any process
+running as the same user. exe.dev offers no argument-free input path for these
+two commands, so treat the token as exposed locally and prefer short `--exp`
+values.
 
 ## Token Generation Helper
 
