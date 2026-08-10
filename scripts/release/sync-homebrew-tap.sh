@@ -64,6 +64,11 @@ if [[ ! "$FORMULA_NAME" =~ ^[0-9A-Za-z._-]+$ ]]; then
   exit 1
 fi
 
+if [[ ! "$ARCHIVE_PREFIX" =~ ^[0-9A-Za-z._-]+$ ]]; then
+  echo "ARCHIVE_PREFIX is not an archive name prefix: $ARCHIVE_PREFIX" >&2
+  exit 1
+fi
+
 if [[ ! "$FORMULA_CLASS" =~ ^[A-Z][0-9A-Za-z_]*$ ]]; then
   echo "FORMULA_CLASS is not a Ruby constant: $FORMULA_CLASS" >&2
   exit 1

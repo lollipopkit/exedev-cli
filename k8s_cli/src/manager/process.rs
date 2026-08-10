@@ -5,13 +5,19 @@ use exedev_core::shell;
 use std::{collections::BTreeMap, path::Path, process::Stdio};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 
 const REMOTE_EXIT_PREFIX: &str = "__EXEDEV_K8S_EXIT__:";
 
 const REMOTE_SSH_ATTEMPTS: usize = 5;
 
 const REMOTE_SSH_RETRY_DELAY: Duration = Duration::from_secs(3);
+
+/// Upper bound on a single remote step, covering the whole exchange rather than
+/// just the connect that `ConnectTimeout` bounds. Generous enough that the slowest
+/// real step (a k3s or Tailscale install on a cold VM) never reaches it, so hitting
+/// it means the remote side is stuck rather than slow.
+const REMOTE_SSH_TIMEOUT: Duration = Duration::from_secs(900);
 
 const TAILNET_LOCK_AUTH_REQUIRED_STATUS: i32 = 126;
 
@@ -220,20 +226,40 @@ pub(super) async fn capture_remote_ssh_output(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // The timed future below is dropped when it elapses, which must take the
+            // ssh process and its pipes with it rather than leaking both.
+            .kill_on_drop(true)
             .spawn()
             .context("failed to run ssh")?;
-        let write_result = if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(script.as_bytes())
+        // Both the script write and the wait are inside the timeout: a remote side
+        // that stops reading stdin blocks the write just as a hung script blocks
+        // the wait.
+        let attempt_result = timeout(REMOTE_SSH_TIMEOUT, async {
+            let write_result = if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(script.as_bytes())
+                    .await
+                    .map_err(anyhow::Error::from)
+            } else {
+                Ok(())
+            };
+            child
+                .wait_with_output()
                 .await
-                .map_err(anyhow::Error::from)
-        } else {
-            Ok(())
+                .context("failed to wait for ssh")
+                .map(|output| (write_result, output))
+        })
+        .await;
+        let (write_result, output) = match attempt_result {
+            Ok(result) => result?,
+            // Not retried: a step that stops responding is not the transient
+            // transport failure the 255 retry below exists for, and rerunning it
+            // would repeat whatever the remote side already did.
+            Err(_) => bail!(
+                "remote command on this VM produced no result within {}s and was killed; check the VM directly, then rerun exedev-k8s bootstrap",
+                REMOTE_SSH_TIMEOUT.as_secs()
+            ),
         };
-        let output = child
-            .wait_with_output()
-            .await
-            .context("failed to wait for ssh")?;
         if let Err(err) = write_result
             && output.status.success()
         {

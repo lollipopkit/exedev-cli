@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use rand::{RngExt, distr::Alphanumeric};
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
+    io::{self, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -42,14 +43,34 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
     Ok(token)
 }
 
+/// Writes a kubeconfig or cluster token so it is never readable by anyone else,
+/// not even briefly.
+///
+/// Creating the file and then tightening it leaves the contents at the umask's
+/// permissions in between, and a crash in that window leaves them there. Any
+/// existing entry is unlinked first, so the create below applies 0600 from the
+/// start and cannot follow a symlink planted at a caller-supplied `--kubeconfig`
+/// path into a file that is readable elsewhere.
 pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to replace {}", path.display()));
+        }
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 

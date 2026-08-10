@@ -174,6 +174,21 @@ fn parses_ssh_destinations_from_ls_json() {
 }
 
 #[test]
+fn parses_ssh_destinations_from_output_wrapped_json() {
+    let destinations = parse_ssh_destinations(
+        r#"{"output":"[{\"vm_name\":\"vm-1\",\"ssh_dest\":\"vm+vm-1@exe.dev\"}]"}"#,
+    );
+    assert_eq!(destinations.get("vm-1").unwrap(), "vm+vm-1@exe.dev");
+}
+
+#[test]
+fn ignores_output_wrapped_table_text() {
+    let destinations =
+        parse_ssh_destinations(r#"{"output":"NAME STATUS\nvm1 running\nvm2 stopped\n"}"#);
+    assert!(destinations.is_empty());
+}
+
+#[test]
 fn ssh_targets_fall_back_to_exe_xyz_hostname() {
     let targets = SshTargets::new(parse_ssh_destinations(
         r#"[{"vm_name":"vm-1","ssh_dest":"vm+vm-1@exe.dev"}]"#,
@@ -296,4 +311,36 @@ fn parses_kubernetes_node_metadata() {
         node.taints
             .contains("exedev.dev/pool=project1-a:NoSchedule")
     );
+}
+
+#[test]
+fn secret_files_are_never_group_or_world_readable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-secret-{}", std::process::id()));
+    let path = dir.join("k3s-token");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    write_secret_file(&path, "first").unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "fresh secret file mode");
+
+    // Rewriting must not inherit the mode of whatever was there before.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    write_secret_file(&path, "second").unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "rewritten secret file mode");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+
+    // A symlink at the destination is replaced, not followed.
+    let elsewhere = dir.join("elsewhere");
+    std::fs::write(&elsewhere, "untouched").unwrap();
+    let link = dir.join("linked-kubeconfig");
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+    write_secret_file(&link, "secret").unwrap();
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "untouched");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "secret");
+    assert!(!std::fs::symlink_metadata(&link).unwrap().is_symlink());
+
+    std::fs::remove_dir_all(&dir).unwrap();
 }

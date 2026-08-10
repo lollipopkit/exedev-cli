@@ -66,8 +66,20 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
 /// `<vm>.exe.xyz` hostname.
 pub(super) fn parse_ssh_destinations(response: &str) -> BTreeMap<String, String> {
     let mut destinations = BTreeMap::new();
-    if let Ok(value) = serde_json::from_str::<Value>(response.trim()) {
-        collect_ssh_destinations(&value, &mut destinations);
+    let Ok(value) = serde_json::from_str::<Value>(response.trim()) else {
+        return destinations;
+    };
+    collect_ssh_destinations(&value, &mut destinations);
+    if destinations.is_empty() {
+        // Same wrapper `parse_vm_names` falls back to. When it holds a rendered
+        // table there is nothing to find and the caller keeps the hostname
+        // fallback; when it holds the serialized listing, the destinations are
+        // in there and are the authoritative ones.
+        if let Some(output) = value.get("output").and_then(Value::as_str)
+            && let Ok(inner) = serde_json::from_str::<Value>(output.trim())
+        {
+            collect_ssh_destinations(&inner, &mut destinations);
+        }
     }
     destinations
 }

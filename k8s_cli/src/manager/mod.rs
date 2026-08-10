@@ -599,10 +599,25 @@ async fn wait_for_kubernetes_nodes(
                     .filter(|name| !nodes.contains_key(*name))
                     .cloned()
                     .collect::<Vec<_>>();
-                if missing.is_empty() {
+                // k3s registers a node before it can run anything, so registration
+                // alone is not enough: the labels, taints, and manifests applied
+                // right after this call need nodes that are actually Ready.
+                let unready = expected
+                    .iter()
+                    .filter(|name| nodes.get(*name).is_some_and(|node| !node.ready))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if missing.is_empty() && unready.is_empty() {
                     return Ok(());
                 }
-                last_error = format!("missing nodes: {}", missing.join(", "));
+                last_error = [
+                    (!missing.is_empty()).then(|| format!("missing: {}", missing.join(", "))),
+                    (!unready.is_empty()).then(|| format!("not ready: {}", unready.join(", "))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ");
             }
             Err(err) => last_error = err.to_string(),
         }
@@ -614,7 +629,7 @@ async fn wait_for_kubernetes_nodes(
             sleep(KUBERNETES_WAIT_DELAY).await;
         }
     }
-    bail!("Kubernetes nodes did not register: {last_error}");
+    bail!("Kubernetes nodes did not become ready: {last_error}");
 }
 
 async fn apply_node_metadata(
