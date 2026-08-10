@@ -72,6 +72,19 @@ jobs:
               ;;
           esac
 
+      # Must run before the build: clap bakes CARGO_PKG_VERSION in at compile time, so a
+      # binary built ahead of this step reports whatever the crates were last set to
+      # rather than the tag it ships under.
+      - name: Sync crate versions with release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag_name }}"
+          fi
+          scripts/release/set-version.sh "${tag}"
+
       - name: Build optimized release binaries
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
 
