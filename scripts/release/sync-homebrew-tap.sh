@@ -19,7 +19,7 @@ RELEASE_TAG="${1:-${RELEASE_TAG:-}}"
 # guesses either one installs nothing.
 ARCHIVE_PREFIX="${ARCHIVE_PREFIX:-exedev-clis}"
 BINARIES=(exedev-ctl exedev-k8s)
-DOCS=(README.md README.zh-CN.md fleet.example.yaml .env.example)
+DOCS=(README.md README.zh-CN.md LICENSE fleet.example.yaml .env.example)
 PLATFORMS=(macos-arm64 macos-amd64 linux-arm64 linux-amd64)
 
 sha256_of() {
@@ -87,11 +87,26 @@ if [[ -z "$TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" ]]; then
   # `Formula/e/exedev-cli.rb` — while a flat personal tap keeps them directly under
   # `Formula`. Writing to the layout the repo does not use produces a file nothing
   # installs from, and the release then reports a tap update that never reached anyone.
-  FORMULA_SHARD_DIR="$TAP_REPO_PATH/Formula/${FORMULA_NAME:0:1}"
-  if [[ -d "$FORMULA_SHARD_DIR" ]]; then
-    TAP_FORMULA_PATH="$FORMULA_SHARD_DIR/${FORMULA_NAME}.rb"
+  #
+  # An existing formula decides it, because that is the file the tap already
+  # installs from. The directory is only a hint: a sharded tap has no letter
+  # directory until its first formula lands there, and a flat tap can hold an
+  # unrelated directory whose name is that letter.
+  FORMULA_SHARD_PATH="$TAP_REPO_PATH/Formula/${FORMULA_NAME:0:1}/${FORMULA_NAME}.rb"
+  FORMULA_FLAT_PATH="$TAP_REPO_PATH/Formula/${FORMULA_NAME}.rb"
+  if [[ -f "$FORMULA_SHARD_PATH" && -f "$FORMULA_FLAT_PATH" ]]; then
+    echo "tap has $FORMULA_NAME in both layouts; set TAP_FORMULA_PATH to pick one:" >&2
+    echo "  $FORMULA_SHARD_PATH" >&2
+    echo "  $FORMULA_FLAT_PATH" >&2
+    exit 1
+  elif [[ -f "$FORMULA_SHARD_PATH" ]]; then
+    TAP_FORMULA_PATH="$FORMULA_SHARD_PATH"
+  elif [[ -f "$FORMULA_FLAT_PATH" ]]; then
+    TAP_FORMULA_PATH="$FORMULA_FLAT_PATH"
+  elif [[ -d "$TAP_REPO_PATH/Formula/${FORMULA_NAME:0:1}" ]]; then
+    TAP_FORMULA_PATH="$FORMULA_SHARD_PATH"
   else
-    TAP_FORMULA_PATH="$TAP_REPO_PATH/Formula/${FORMULA_NAME}.rb"
+    TAP_FORMULA_PATH="$FORMULA_FLAT_PATH"
   fi
 fi
 
@@ -136,13 +151,18 @@ sha_for() {
 
 # The formula's `install` block names each file directly, so a renamed or dropped
 # archive member fails at install time on the user's machine rather than here.
-# Check the payload against the release we just downloaded instead.
-tar -tzf "$WORK_DIR/${ARCHIVE_PREFIX}-${RELEASE_TAG}-macos-arm64.tar.gz" > "$WORK_DIR/members.txt"
-for member in "${BINARIES[@]}" "${DOCS[@]}"; do
-  if ! grep -qx "\./$member" "$WORK_DIR/members.txt"; then
-    echo "release archive does not contain expected member: $member" >&2
-    exit 1
-  fi
+# Check the payload against the release we just downloaded instead. Every platform
+# is checked: one formula serves all of them, and each `url` is only ever unpacked
+# on the platform it belongs to, so a malformed Linux archive is invisible in the
+# macOS one.
+for platform in "${PLATFORMS[@]}"; do
+  tar -tzf "$WORK_DIR/${ARCHIVE_PREFIX}-${RELEASE_TAG}-${platform}.tar.gz" > "$WORK_DIR/members.txt"
+  for member in "${BINARIES[@]}" "${DOCS[@]}"; do
+    if ! grep -qx "\./$member" "$WORK_DIR/members.txt"; then
+      echo "$platform release archive does not contain expected member: $member" >&2
+      exit 1
+    fi
+  done
 done
 
 url_for() {

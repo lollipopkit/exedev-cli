@@ -24,6 +24,17 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
             return Ok(names);
         }
         if let Some(output) = value.get("output").and_then(Value::as_str) {
+            // The wrapper carries either the serialized listing or a rendered
+            // table. Decode it as JSON first, the way `parse_ssh_destinations`
+            // does: reading a serialized listing as text yields fragments of the
+            // JSON as VM names, and bootstrap would then recreate VMs it already
+            // has.
+            if let Ok(inner) = serde_json::from_str::<Value>(output.trim()) {
+                collect_vm_names_from_json(&inner, &mut names);
+                if !names.is_empty() {
+                    return Ok(names);
+                }
+            }
             return Ok(parse_vm_names_from_text(output));
         }
     }

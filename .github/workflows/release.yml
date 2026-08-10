@@ -46,7 +46,10 @@ jobs:
           # `refs/tags/` rather than the bare input: a dispatch input is a free-form
           # string, so a branch name or SHA would otherwise check out and build a ref
           # that is not the tag the publish job creates the release for.
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag_name) || github.ref }}
+          # `github.sha` rather than `github.ref` on the push path: the ref is
+          # resolved again at checkout time, so a tag moved between the trigger and
+          # this step would build a commit the release was never requested for.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag_name) || github.sha }}
           # This job runs no git operations after checkout, and the build compiles
           # third-party crates, so leaving the token in .git/config would only widen
           # what a compromised dependency can reach.
@@ -163,7 +166,11 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v3
+        # Pinned to a commit, not the mutable v3 tag: this is the only step that
+        # runs with contents: write, so retagging upstream would hand a new
+        # revision the ability to rewrite this repository's releases.
+        # softprops/action-gh-release v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           files: dist/*.tar.gz

@@ -41,7 +41,7 @@ if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
 fi
 
 set_package_version() {
-  local file="$1"
+  local src="$1" dest="$2"
   awk -v ver="$VERSION" '
     /^\[/ { section = $0 }
     section == "[package]" && !replaced && /^version[[:space:]]*=/ {
@@ -51,19 +51,33 @@ set_package_version() {
     }
     { print }
     END { exit replaced ? 0 : 1 }
-  ' "$file" > "$file.tmp"
+  ' "$src" > "$dest"
 }
 
 set_path_dep_version() {
-  local file="$1" key="$2"
+  local src="$1" dest="$2" key="$3"
   awk -v key="$key" -v ver="$VERSION" '
     index($0, key "=") == 1 || index($0, key " =") == 1 {
       if (sub(/version[[:space:]]*=[[:space:]]*"[^"]*"/, "version = \"" ver "\"")) replaced = 1
     }
     { print }
     END { exit replaced ? 0 : 1 }
-  ' "$file" > "$file.tmp"
+  ' "$src" > "$dest"
 }
+
+# Every rewrite is staged next to its target and only moved into place once all of
+# them have succeeded. Rewriting in a single pass left the workspace split across
+# two versions whenever a later member or the lockfile refresh failed, which is
+# worse than not running at all: the build then reports a version mismatch rather
+# than the actual failure.
+TARGETS=()
+cleanup_staged() {
+  local target
+  for target in "${TARGETS[@]}"; do
+    rm -f "$target.tmp" "$target.bak"
+  done
+}
+trap cleanup_staged EXIT
 
 for member in "${MEMBERS[@]}"; do
   manifest="$REPO_ROOT/$member/Cargo.toml"
@@ -71,27 +85,47 @@ for member in "${MEMBERS[@]}"; do
     echo "workspace member has no manifest: $manifest" >&2
     exit 1
   fi
-  if ! set_package_version "$manifest"; then
-    rm -f "$manifest.tmp"
+  TARGETS+=("$manifest")
+  if ! set_package_version "$manifest" "$manifest.tmp"; then
     echo "no [package] version to replace in $manifest" >&2
     exit 1
   fi
-  mv "$manifest.tmp" "$manifest"
 done
 
+ROOT_MANIFEST="$REPO_ROOT/Cargo.toml"
+if [[ ! -f "$ROOT_MANIFEST" ]]; then
+  echo "workspace has no root manifest: $ROOT_MANIFEST" >&2
+  exit 1
+fi
+TARGETS+=("$ROOT_MANIFEST")
+cp "$ROOT_MANIFEST" "$ROOT_MANIFEST.tmp"
 for key in "${PATH_DEP_KEYS[@]}"; do
-  if ! set_path_dep_version "$REPO_ROOT/Cargo.toml" "$key"; then
-    rm -f "$REPO_ROOT/Cargo.toml.tmp"
-    echo "no versioned '$key' entry to replace in $REPO_ROOT/Cargo.toml" >&2
+  # Each key edits the staged copy, so several of them accumulate in one file.
+  if ! set_path_dep_version "$ROOT_MANIFEST.tmp" "$ROOT_MANIFEST.next" "$key"; then
+    rm -f "$ROOT_MANIFEST.next"
+    echo "no versioned '$key' entry to replace in $ROOT_MANIFEST" >&2
     exit 1
   fi
-  mv "$REPO_ROOT/Cargo.toml.tmp" "$REPO_ROOT/Cargo.toml"
+  mv "$ROOT_MANIFEST.next" "$ROOT_MANIFEST.tmp"
+done
+
+for target in "${TARGETS[@]}"; do
+  cp "$target" "$target.bak"
+done
+for target in "${TARGETS[@]}"; do
+  mv "$target.tmp" "$target"
 done
 
 # The release build runs with --locked, which fails outright when Cargo.lock still
 # carries the old member versions. Refresh it here rather than leaving the build to
 # discover the mismatch.
-(cd "$REPO_ROOT" && cargo update --workspace --quiet)
+if ! (cd "$REPO_ROOT" && cargo update --workspace --quiet); then
+  for target in "${TARGETS[@]}"; do
+    mv "$target.bak" "$target"
+  done
+  echo "cargo update failed; manifests were restored to their previous versions" >&2
+  exit 1
+fi
 
 echo "Set workspace version: $VERSION"
 for member in "${MEMBERS[@]}"; do

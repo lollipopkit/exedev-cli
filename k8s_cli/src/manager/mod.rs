@@ -741,7 +741,14 @@ fn confirm(prompt: &str, yes: bool) -> Result<()> {
 }
 
 fn require_env(name: &str) -> Result<String> {
-    env::var(name).with_context(|| format!("missing {name}"))
+    let value = env::var(name).with_context(|| format!("missing {name}"))?;
+    // A present-but-empty variable would otherwise pass this check and reach the
+    // VM as `tailscale up --auth-key ''` or an empty k3s URL/token, failing only
+    // after the plan was confirmed and VMs were created.
+    if value.trim().is_empty() {
+        bail!("{name} is set but empty");
+    }
+    Ok(value)
 }
 
 fn mode_name(mode: ClusterMode) -> &'static str {

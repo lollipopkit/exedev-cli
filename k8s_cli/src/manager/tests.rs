@@ -38,6 +38,17 @@ fn parses_vm_names_from_output_text() {
 }
 
 #[test]
+fn parses_vm_names_from_output_wrapped_json() {
+    let names = parse_vm_names(
+        r#"{"output":"[{\"vm_name\":\"vm-1\",\"ssh_dest\":\"vm+vm-1@exe.dev\"},{\"vm_name\":\"vm-2\"}]"}"#,
+    )
+    .unwrap();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains("vm-1"));
+    assert!(names.contains("vm-2"));
+}
+
+#[test]
 fn builds_exedev_new_command() {
     let node = NodeSpec {
         name: "p1-a-1".into(),
