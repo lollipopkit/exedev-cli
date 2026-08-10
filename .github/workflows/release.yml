@@ -47,6 +47,10 @@ jobs:
           # string, so a branch name or SHA would otherwise check out and build a ref
           # that is not the tag the publish job creates the release for.
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag_name) || github.ref }}
+          # This job runs no git operations after checkout, and the build compiles
+          # third-party crates, so leaving the token in .git/config would only widen
+          # what a compromised dependency can reach.
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
