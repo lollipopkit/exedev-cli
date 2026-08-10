@@ -43,7 +43,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
+          # `refs/tags/` rather than the bare input: a dispatch input is a free-form
+          # string, so a branch name or SHA would otherwise check out and build a ref
+          # that is not the tag the publish job creates the release for.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag_name) || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

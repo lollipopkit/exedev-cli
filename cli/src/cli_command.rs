@@ -144,10 +144,16 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
             ]);
         }
         Commands::Exit => words.push("exit".into()),
-        // `exec` is a raw passthrough, so it is left exactly as the user typed it.
         Commands::Exec(cmd) => words.extend(cmd.command.clone()),
     }
 
+    // `exec` never has `--yes` injected: the user spelled the command out, and
+    // silently adding a flag that suppresses a server-side confirmation could
+    // carry out a destructive action they did not agree to. The global `--yes`
+    // still applies to `exec`, because it controls the local prompt in
+    // `guard_dangerous_command`, which runs on the built command either way.
+    // (The global `--json` is separate: it is an output-format flag, so the SSH
+    // path appends it to any command, `exec` included.)
     if !matches!(command, Commands::Exec(_)) && needs_server_confirmation(&words) {
         words.push("--yes".into());
     }

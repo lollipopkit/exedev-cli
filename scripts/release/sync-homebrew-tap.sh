@@ -40,6 +40,43 @@ fi
 
 VERSION="${RELEASE_TAG#v}"
 
+# Every value below is interpolated into download URLs, local file paths, and
+# double-quoted Ruby strings in the formula. Validate them here rather than
+# escaping at each use: a stray quote, newline, or slash otherwise produces a
+# formula that generation reports as a success and Homebrew cannot parse.
+SEMVER_NUM='(0|[1-9][0-9]*)'
+SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
+
+if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+  echo "release tag is not a semantic version: $RELEASE_TAG" >&2
+  echo "Expected something like v0.1.11 or 1.2.3-rc.1+build.5." >&2
+  exit 1
+fi
+
+if [[ ! "$REPO_SLUG" =~ ^[0-9A-Za-z._-]+/[0-9A-Za-z._-]+$ ]]; then
+  echo "REPO_SLUG is not an owner/repo slug: $REPO_SLUG" >&2
+  exit 1
+fi
+
+if [[ ! "$FORMULA_NAME" =~ ^[0-9A-Za-z._-]+$ ]]; then
+  echo "FORMULA_NAME is not a formula name: $FORMULA_NAME" >&2
+  exit 1
+fi
+
+if [[ ! "$FORMULA_CLASS" =~ ^[A-Z][0-9A-Za-z_]*$ ]]; then
+  echo "FORMULA_CLASS is not a Ruby constant: $FORMULA_CLASS" >&2
+  exit 1
+fi
+
+for field in FORMULA_DESC FORMULA_LICENSE; do
+  value="${!field}"
+  if [[ -z "$value" || "$value" == *\"* || "$value" == *\\* || "$value" == *"#"* || "$value" == *$'\n'* ]]; then
+    echo "$field must be non-empty and free of quotes, backslashes, '#', and newlines: $value" >&2
+    exit 1
+  fi
+done
+
 if [[ -z "$TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" ]]; then
   # homebrew-core files its formulae under the first character of their name —
   # `Formula/e/exedev-cli.rb` — while a flat personal tap keeps them directly under

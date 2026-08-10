@@ -48,13 +48,21 @@ fn is_dangerous(command: &str) -> bool {
         "share access allow ",
         "grant-support-root ",
         "ssh-key remove ",
+        // `add` can carry --attach specs and `attach` mounts the credential into
+        // VMs, so both hand out access just as `detach` and `edit` take it away.
+        "integrations add ",
+        "integrations attach ",
         "integrations remove ",
         "integrations setup ",
         "integrations detach ",
         "integrations edit ",
+        // Everything that changes who holds authority over the team or its VMs.
+        "team add ",
         "team remove ",
         "team role ",
         "team transfer ",
+        "team auth set ",
+        "team settings vm-sharing ",
         "team disable",
         "team settings auto-join on",
         "domain rm ",
@@ -110,8 +118,16 @@ mod tests {
         assert!(is_dangerous("share access allow mybox"));
         assert!(is_dangerous("team settings auto-join on"));
         assert!(is_dangerous("share add mybox a@b.c --root"));
+        assert!(is_dangerous("integrations add github --name repo"));
+        assert!(is_dangerous("integrations attach my-mcp auto:all"));
+        assert!(is_dangerous("team add a@b.c admin"));
+        assert!(is_dangerous("team auth set oidc --issuer-url https://x"));
+        assert!(is_dangerous("team settings vm-sharing all-members"));
         assert!(!is_dangerous("ls"));
         assert!(!is_dangerous("team members"));
+        assert!(!is_dangerous("team settings"));
+        assert!(!is_dangerous("integrations list --usage"));
+        assert!(!is_dangerous("integrations catalog stripe"));
         assert!(!is_dangerous("domain ls -a"));
         assert!(!is_dangerous("share add mybox a@b.c"));
         assert!(!is_dangerous("share remove mybox a@b.c --root"));

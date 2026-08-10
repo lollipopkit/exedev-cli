@@ -165,7 +165,12 @@ grant-support-root exit exec
 ```
 
 `exec` is the fallback command for future exe.dev commands that do not yet have
-a typed wrapper.
+a typed wrapper. Its arguments are sent as written: no flag is injected into
+them, so a command that prompts server-side (`team disable`,
+`billing credits buy`) needs its own `--yes` inside the raw command. The global
+`--yes` still skips this CLI's own confirmation prompt, and the global `--json`
+still applies, because it selects the output format rather than changing what
+the command does.
 
 Two documented commands are intentionally left to `exec`. Both are one-time
 onboarding steps with no automation value, and both take a token as a positional
