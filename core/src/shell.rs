@@ -43,11 +43,20 @@ fn is_dangerous(command: &str) -> bool {
     let prefixes = [
         "rm ",
         "share set-public ",
+        "share set-private ",
         "share add-link ",
         "share add-share-link ",
+        "share remove-link ",
+        "share remove-share-link ",
+        "share remove ",
         "share access allow ",
         "grant-support-root ",
+        // Both mint a credential that reaches VMs, so they belong with the
+        // revocation the list already covers.
+        "ssh-key add ",
+        "ssh-key generate-api-key",
         "ssh-key remove ",
+        "domain add ",
         // `add` can carry --attach specs and `attach` mounts the credential into
         // VMs, so both hand out access just as `detach` and `edit` take it away.
         "integrations add ",
@@ -123,14 +132,24 @@ mod tests {
         assert!(is_dangerous("team add a@b.c admin"));
         assert!(is_dangerous("team auth set oidc --issuer-url https://x"));
         assert!(is_dangerous("team settings vm-sharing all-members"));
+        assert!(is_dangerous("ssh-key add --tag prod 'ssh-ed25519 AAAA k'"));
+        assert!(is_dangerous("ssh-key generate-api-key --exp 30d"));
+        assert!(is_dangerous("share remove mybox a@b.c"));
+        assert!(is_dangerous("share remove-link mybox tok"));
+        assert!(is_dangerous("share set-private mybox"));
+        assert!(is_dangerous("domain add mybox app.example.com"));
         assert!(!is_dangerous("ls"));
+        assert!(!is_dangerous("ssh-key list"));
+        assert!(!is_dangerous("share show mybox"));
+        assert!(!is_dangerous("domain ls mybox"));
         assert!(!is_dangerous("team members"));
         assert!(!is_dangerous("team settings"));
         assert!(!is_dangerous("integrations list --usage"));
         assert!(!is_dangerous("integrations catalog stripe"));
         assert!(!is_dangerous("domain ls -a"));
         assert!(!is_dangerous("share add mybox a@b.c"));
-        assert!(!is_dangerous("share remove mybox a@b.c --root"));
+        // Revocation is covered as a deletion, so the --root downgrade is too.
+        assert!(is_dangerous("share remove mybox a@b.c --root"));
         assert!(!is_dangerous("team settings auto-join off"));
         assert!(!is_dangerous("billing credits usage --group=day"));
         assert!(!is_dangerous("pool list"));

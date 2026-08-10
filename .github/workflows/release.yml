@@ -18,8 +18,43 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  resolve:
+    name: resolve release commit
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+
+    steps:
+      # Resolved once, here, so every matrix build and the publish step agree on a
+      # single immutable commit. Resolving the tag independently per job would let a
+      # tag moved mid-run produce archives from more than one commit.
+      - name: Resolve the tag to a commit
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG_NAME}"
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+            type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+            # An annotated tag points at a tag object, not the commit it names.
+            if [[ "${type}" == "tag" ]]; then
+              sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+            sha="${GITHUB_SHA}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
   build:
     name: build ${{ matrix.platform }}
+    needs: resolve
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -43,13 +78,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # `refs/tags/` rather than the bare input: a dispatch input is a free-form
-          # string, so a branch name or SHA would otherwise check out and build a ref
-          # that is not the tag the publish job creates the release for.
-          # `github.sha` rather than `github.ref` on the push path: the ref is
-          # resolved again at checkout time, so a tag moved between the trigger and
-          # this step would build a commit the release was never requested for.
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag_name) || github.sha }}
+          # The commit the resolve job pinned, never a ref name: a ref is resolved
+          # again at checkout time, so a tag moved between the trigger and this step
+          # would build a commit the release was never requested for.
+          ref: ${{ needs.resolve.outputs.sha }}
           # This job runs no git operations after checkout, and the build compiles
           # third-party crates, so leaving the token in .git/config would only widen
           # what a compromised dependency can reach.
@@ -90,14 +122,10 @@ jobs:
         env:
           # Passed through the environment rather than interpolated into the script,
           # so a crafted dispatch input cannot inject shell commands.
-          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${INPUT_TAG_NAME}"
-          fi
-          scripts/release/set-version.sh "${tag}"
+          scripts/release/set-version.sh "${RELEASE_TAG}"
 
       - name: Build optimized release binaries
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
@@ -106,16 +134,11 @@ jobs:
         id: package
         shell: bash
         env:
-          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${INPUT_TAG_NAME}"
-          fi
-
-          archive="exedev-clis-${tag}-${{ matrix.platform }}.tar.gz"
+          archive="exedev-clis-${RELEASE_TAG}-${{ matrix.platform }}.tar.gz"
           mkdir -p package dist
 
           cp "target/${{ matrix.target }}/dist/exedev-ctl" "package/exedev-ctl"
@@ -139,7 +162,7 @@ jobs:
 
   publish:
     name: publish release
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -152,18 +175,26 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Resolve release tag
-        id: meta
+      # The archives were built from one commit; the release is about to be
+      # attached to a tag name. If the tag moved in between, publishing would ship
+      # binaries that do not match the source the tag now points at.
+      - name: Verify the tag still points at the built commit
         shell: bash
         env:
-          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          BUILT_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${INPUT_TAG_NAME}"
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          if [[ "${type}" == "tag" ]]; then
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
           fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          if [[ "${sha}" != "${BUILT_SHA}" ]]; then
+            echo "tag ${RELEASE_TAG} now points at ${sha}, but these archives were built from ${BUILT_SHA}" >&2
+            exit 1
+          fi
 
       - name: Publish GitHub release
         # Pinned to a commit, not the mutable v3 tag: this is the only step that
@@ -172,6 +203,6 @@ jobs:
         # softprops/action-gh-release v3.0.2
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
           files: dist/*.tar.gz
           generate_release_notes: true

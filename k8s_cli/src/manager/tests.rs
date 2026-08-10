@@ -1,6 +1,8 @@
 use super::super::fleet::NodeSpec;
 use super::kubectl::kubeconfig_args;
-use super::parsing::{parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
+use super::parsing::{
+    parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names, parse_vm_names_from_text,
+};
 use super::process::{
     SshTargets, command_output_detail, display_command, parse_remote_stdout, remote_ssh_args,
     remote_status_script,
@@ -8,6 +10,7 @@ use super::process::{
 use super::scripts::{
     k3s_agent_install_command, k3s_server_install_command, tailscale_install_command,
 };
+use super::state::{read_regular_file, write_secret_file};
 use super::*;
 use std::{collections::BTreeMap, path::Path};
 
@@ -151,7 +154,7 @@ fn k3s_agent_install_command_supports_no_supervisor_fallback() {
 #[test]
 fn builds_remote_ssh_command_for_stdin_script() {
     let args = remote_ssh_args("vm-1.exe.xyz");
-    assert_eq!(args.len(), 11);
+    assert_eq!(args.len(), 12);
     assert_eq!(args[0], "-o");
     assert_eq!(args[1], "ControlMaster=no");
     assert_eq!(args[2], "-o");
@@ -160,9 +163,17 @@ fn builds_remote_ssh_command_for_stdin_script() {
     assert_eq!(args[5], "StrictHostKeyChecking=accept-new");
     assert_eq!(args[6], "-o");
     assert_eq!(args[7], "ConnectTimeout=15");
-    assert_eq!(args[8], "vm-1.exe.xyz");
-    assert_eq!(args[9], "sh");
-    assert_eq!(args[10], "-s");
+    assert_eq!(args[8], "--");
+    assert_eq!(args[9], "vm-1.exe.xyz");
+    assert_eq!(args[10], "sh");
+    assert_eq!(args[11], "-s");
+}
+
+#[test]
+fn option_shaped_destination_stays_a_destination() {
+    let args = remote_ssh_args("-oProxyCommand=touch /tmp/pwned");
+    let separator = args.iter().position(|arg| arg == "--").unwrap();
+    assert_eq!(args[separator + 1], "-oProxyCommand=touch /tmp/pwned");
 }
 
 #[test]
@@ -352,6 +363,69 @@ fn secret_files_are_never_group_or_world_readable() {
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "untouched");
     assert_eq!(std::fs::read_to_string(&link).unwrap(), "secret");
     assert!(!std::fs::symlink_metadata(&link).unwrap().is_symlink());
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn empty_json_listing_yields_no_vm_names() {
+    assert!(parse_vm_names(r#"{"vms":[]}"#).unwrap().is_empty());
+    assert!(parse_vm_names("[]").unwrap().is_empty());
+    assert!(
+        parse_vm_names(r#"{"error":"quota exceeded"}"#)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn text_fallback_keeps_vm_names_starting_with_name() {
+    let names = parse_vm_names_from_text("NAME STATUS\nnameserver running\nvm2 stopped\n");
+    assert!(names.contains("nameserver"));
+    assert!(names.contains("vm2"));
+    assert!(!names.contains("NAME"));
+    assert_eq!(names.len(), 2);
+}
+
+#[test]
+fn secret_write_failure_leaves_the_previous_secret_intact() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-failpath-{}", std::process::id()));
+    let path = dir.join("k3s-token");
+    let _ = std::fs::remove_dir_all(&dir);
+    write_secret_file(&path, "good-token").unwrap();
+
+    // A read-only directory fails the staged create, standing in for any I/O
+    // error partway through replacing the file.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let err = write_secret_file(&path, "replacement").unwrap_err();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(err.to_string().contains("failed to create"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "good-token");
+    let staged = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(staged, 0, "staged file left behind");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn symlinked_token_is_rejected_rather_than_followed() {
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-symlink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let secret_elsewhere = dir.join("other-secret");
+    std::fs::write(&secret_elsewhere, "someone-elses-secret").unwrap();
+    let token_path = dir.join("k3s-token");
+    std::os::unix::fs::symlink(&secret_elsewhere, &token_path).unwrap();
+
+    let err = read_regular_file(&token_path).unwrap_err();
+    assert!(err.to_string().contains("not a regular file"));
 
     std::fs::remove_dir_all(&dir).unwrap();
 }

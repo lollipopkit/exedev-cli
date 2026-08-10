@@ -71,13 +71,25 @@ set_path_dep_version() {
 # worse than not running at all: the build then reports a version mismatch rather
 # than the actual failure.
 TARGETS=()
+APPLIED=0
+REFRESHED=0
 cleanup_staged() {
   local target
+  # An exit between applying the manifests and refreshing the lockfile — an error,
+  # a Ctrl-C, or a terminated CI step — would otherwise leave the workspace on the
+  # new version with a lockfile still on the old one, and drop the backups that
+  # are the only way back.
+  if [[ "$APPLIED" -eq 1 && "$REFRESHED" -eq 0 ]]; then
+    for target in "${TARGETS[@]}"; do
+      [[ -f "$target.bak" ]] && mv "$target.bak" "$target"
+    done
+  fi
   for target in "${TARGETS[@]}"; do
     rm -f "$target.tmp" "$target.bak"
   done
 }
 trap cleanup_staged EXIT
+trap 'exit 1' INT TERM
 
 for member in "${MEMBERS[@]}"; do
   manifest="$REPO_ROOT/$member/Cargo.toml"
@@ -115,17 +127,18 @@ done
 for target in "${TARGETS[@]}"; do
   mv "$target.tmp" "$target"
 done
+APPLIED=1
 
 # The release build runs with --locked, which fails outright when Cargo.lock still
 # carries the old member versions. Refresh it here rather than leaving the build to
-# discover the mismatch.
+# discover the mismatch. `--workspace` re-resolves only the workspace members, so
+# no third-party dependency selection changes and the tag still builds from its
+# reviewed lockfile.
 if ! (cd "$REPO_ROOT" && cargo update --workspace --quiet); then
-  for target in "${TARGETS[@]}"; do
-    mv "$target.bak" "$target"
-  done
-  echo "cargo update failed; manifests were restored to their previous versions" >&2
+  echo "cargo update failed; manifests are being restored to their previous versions" >&2
   exit 1
 fi
+REFRESHED=1
 
 echo "Set workspace version: $VERSION"
 for member in "${MEMBERS[@]}"; do

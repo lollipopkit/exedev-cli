@@ -37,6 +37,10 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
             }
             return Ok(parse_vm_names_from_text(output));
         }
+        // A response that parsed as JSON has already been searched. Handing its
+        // serialized form to the text parser would take `{"vms":[]}` apart into
+        // a VM named after the JSON itself; an empty list is simply empty.
+        return Ok(names);
     }
     Ok(parse_vm_names_from_text(trimmed))
 }
@@ -144,9 +148,13 @@ pub(super) fn parse_vm_names_from_text(text: &str) -> BTreeSet<String> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter(|line| !line.to_ascii_lowercase().starts_with("name"))
         .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_string)
+        // Only the first column of the first row is a header. Dropping every row
+        // whose name starts with "name" would lose a VM actually called
+        // `nameserver`, and bootstrap would then try to create it again.
+        .enumerate()
+        .filter(|(index, name)| *index > 0 || !name.eq_ignore_ascii_case("name"))
+        .map(|(_, name)| name.to_string())
         .collect()
 }
 

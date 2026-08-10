@@ -592,8 +592,25 @@ async fn wait_for_kubernetes_nodes(
         )
         .await
         {
+            // A probe that returns unparseable JSON is treated like any other
+            // failed probe: kubectl can answer mid-rollout with something this
+            // cannot read, and giving up on the first one would spend none of the
+            // retry window and report a parse error instead of the cluster state.
             Ok(output) => {
-                let nodes = parse_kubernetes_nodes(&output)?;
+                let nodes = match parse_kubernetes_nodes(&output) {
+                    Ok(nodes) => nodes,
+                    Err(err) => {
+                        last_error = err.to_string();
+                        if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
+                            println!(
+                                "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
+                                output::warn("waiting:")
+                            );
+                            sleep(KUBERNETES_WAIT_DELAY).await;
+                        }
+                        continue;
+                    }
+                };
                 let missing = expected
                     .iter()
                     .filter(|name| !nodes.contains_key(*name))

@@ -19,7 +19,15 @@ const REMOTE_SSH_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// it means the remote side is stuck rather than slow.
 const REMOTE_SSH_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// Upper bound on a captured local command. Every caller is a kubectl read whose
+/// own `--request-timeout` is at most 30s, so this only fires when kubectl itself
+/// is stuck rather than waiting on the API.
+const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
 const TAILNET_LOCK_AUTH_REQUIRED_STATUS: i32 = 126;
+
+/// Emitted by `CHECK_TAILNET_LOCK_SCRIPT` alongside its 126 exit.
+const TAILNET_LOCK_MARKER: &str = "Tailnet Lock is enabled and this VM is locked out";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct CommandOutput {
@@ -71,7 +79,14 @@ pub(super) async fn remote_run(targets: &SshTargets, vm: &str, script: &str) -> 
         if output.status == 0 {
             return Ok(());
         }
-        if output.status != TAILNET_LOCK_AUTH_REQUIRED_STATUS {
+        // 126 is also the conventional shell status for "found but not executable",
+        // so the status alone does not identify the Tailnet Lock case. Pairing it
+        // with the message the check emits keeps an unrelated 126 reported as the
+        // failure it is, rather than prompting for a signature and then rerunning
+        // a step that already changed state.
+        if output.status != TAILNET_LOCK_AUTH_REQUIRED_STATUS
+            || !output.stderr.contains(TAILNET_LOCK_MARKER)
+        {
             bail!(
                 "remote command on {vm} exited with status {}",
                 output.status
@@ -188,12 +203,23 @@ pub(super) async fn capture_command_output(program: &str, args: &[&str]) -> Resu
         "{}",
         output::command(format!("$ {}", display_command(program, args)))
     );
-    let output = TokioCommand::new(program)
+    let child = TokioCommand::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("failed to run {program}"))?;
+        // Dropped by the timeout below, which must take the process with it.
+        .kill_on_drop(true)
+        .output();
+    // `--request-timeout` bounds kubectl's API call, not kubectl itself: a
+    // kubeconfig exec plugin, a credential helper, or a wedged resolver can hang
+    // before any request is made, which would otherwise consume the whole polling
+    // window in one attempt and never reach the diagnostics.
+    let output = match timeout(CAPTURE_COMMAND_TIMEOUT, child).await {
+        Ok(result) => result.with_context(|| format!("failed to run {program}"))?,
+        Err(_) => bail!(
+            "{program} produced no result within {}s and was killed",
+            CAPTURE_COMMAND_TIMEOUT.as_secs()
+        ),
+    };
     if !output.status.success() {
         bail!(
             "{program} exited with status {}: {}",
@@ -274,7 +300,12 @@ pub(super) async fn capture_remote_ssh_output(
 
         last_status = Some(output.status);
         last_detail = command_output_detail(&output.stdout, &output.stderr);
-        if output.status.code() == Some(255) && attempt < REMOTE_SSH_ATTEMPTS {
+        // The wrapper prints the exit marker once the remote script has finished.
+        // Seeing it means ssh failed while returning output, not before running
+        // anything, so resending the script would repeat an install or a service
+        // change that already happened.
+        let remote_ran = String::from_utf8_lossy(&output.stdout).contains(REMOTE_EXIT_PREFIX);
+        if output.status.code() == Some(255) && !remote_ran && attempt < REMOTE_SSH_ATTEMPTS {
             eprintln!(
                 "{}",
                 output::stderr_block(format!(
@@ -358,6 +389,11 @@ pub(super) fn remote_ssh_args(dest: &str) -> Vec<String> {
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
         "ConnectTimeout=15".into(),
+        // The destination comes from the exe.dev API, and ssh parses options up to
+        // the first non-option word, so without this a reported destination
+        // starting with `-` would be read as a local ssh option such as
+        // `-oProxyCommand=...` instead of a host.
+        "--".into(),
         dest.to_string(),
         "sh".into(),
         "-s".into(),
