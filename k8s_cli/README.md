@@ -221,9 +221,12 @@ Expected result: `test-ex-p1-a-1` and `test-ex-p2-b-1` are `Ready`, and
 confirmation unless `--yes` is passed. `destroy` always asks for confirmation,
 even when global `--yes` is present.
 
-`bootstrap` creates missing VMs, installs Tailscale and k3s through local
-`ssh exe.dev ssh <vm> ...`, applies labels and taints with `kubectl`, and
-optionally runs `kubectl apply -f <dir>`.
+`bootstrap` creates missing VMs, installs Tailscale and k3s over direct SSH to
+each VM, applies labels and taints with `kubectl`, and optionally runs
+`kubectl apply -f <dir>`. The SSH destination comes from `ssh_dest` in the
+exe.dev `ls` response, so VMs whose hostname cannot route SSH directly are
+reached through the username-prefixed destination exe.dev reports; VMs missing
+from `ls` fall back to `<vm>.exe.xyz`.
 
 The generated kubeconfig and k3s token for new clusters are stored under:
 

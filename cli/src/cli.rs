@@ -13,10 +13,14 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = Transport::Ssh)]
     pub(crate) transport: Transport,
 
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Print raw JSON instead of human output")]
     pub(crate) json: bool,
 
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Skip the confirmation prompt for dangerous commands"
+    )]
     pub(crate) yes: bool,
 
     #[command(subcommand)]
@@ -61,6 +65,8 @@ pub(crate) enum Commands {
     Domain(DomainCmd),
     /// View and manage your team.
     Team(TeamCmd),
+    /// Manage your team's VM pools (reserved capacity slices).
+    Pool(PoolCmd),
     /// Manage your invite link and rewards.
     Invite(InviteCmd),
     /// Show current user information.
@@ -113,8 +119,6 @@ pub(crate) struct LsCmd {
 #[derive(Debug, Args)]
 pub(crate) struct NewCmd {
     #[arg(long)]
-    pub(crate) command: Option<String>,
-    #[arg(long)]
     pub(crate) comment: Option<String>,
     #[arg(long)]
     pub(crate) cpu: Option<String>,
@@ -132,6 +136,9 @@ pub(crate) struct NewCmd {
     pub(crate) name: Option<String>,
     #[arg(long)]
     pub(crate) no_email: bool,
+    /// Create the VM in one of your team's pools (see `pool list`).
+    #[arg(long)]
+    pub(crate) pool: Option<String>,
     #[arg(long)]
     pub(crate) prompt: Option<String>,
     #[arg(long)]
@@ -252,17 +259,25 @@ pub(crate) struct ShareVmCmd {
 #[derive(Debug, Args)]
 pub(crate) struct ShareAddCmd {
     pub(crate) vm: String,
+    /// An email address, or `team` to share with the whole team.
     pub(crate) target: String,
     #[arg(long)]
     pub(crate) message: Option<String>,
     #[arg(long)]
     pub(crate) qr: bool,
+    /// Grant shell (SSH, Terminal, Shelley) access instead of web-only.
+    #[arg(long)]
+    pub(crate) root: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ShareRemoveCmd {
     pub(crate) vm: String,
+    /// An email address, or `team` to revoke the team share.
     pub(crate) target: String,
+    /// Downgrade shell access to web-only instead of revoking access.
+    #[arg(long)]
+    pub(crate) root: bool,
 }
 
 #[derive(Debug, Args)]
@@ -274,7 +289,11 @@ pub(crate) struct ShareRemoveLinkCmd {
 #[derive(Debug, Args)]
 pub(crate) struct ShareReceiveEmailCmd {
     pub(crate) vm: String,
+    /// One of on, off.
     pub(crate) state: Option<String>,
+    /// Restrict who the VM may email: all, known, owner, none.
+    #[arg(long)]
+    pub(crate) reply_policy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -379,11 +398,12 @@ pub(crate) struct TeamBillingCmd {
 #[derive(Debug, Subcommand)]
 pub(crate) enum TeamBillingSubcommand {
     /// Update team billing information.
-    Update(TeamBillingUpdateCmd),
+    Update(BillingContactCmd),
 }
 
+/// Billing contact fields shared by `billing update` and `team billing update`.
 #[derive(Debug, Args)]
-pub(crate) struct TeamBillingUpdateCmd {
+pub(crate) struct BillingContactCmd {
     #[arg(long)]
     pub(crate) name: Option<String>,
     #[arg(long)]
@@ -402,6 +422,12 @@ pub(crate) struct TeamBillingUpdateCmd {
     pub(crate) address_postal_code: Option<String>,
     #[arg(long)]
     pub(crate) address_country: Option<String>,
+    /// Tax ID type shown on invoices (e.g. eu_vat, pl_nip, us_ein).
+    #[arg(long)]
+    pub(crate) tax_id_type: Option<String>,
+    /// Tax ID value shown on invoices.
+    #[arg(long)]
+    pub(crate) tax_id_value: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -447,11 +473,20 @@ pub(crate) enum TeamSettingsSubcommand {
     /// Set who can share team VMs.
     #[command(name = "vm-sharing")]
     VmSharing(TeamVmSharingCmd),
+    /// Allow users from your email domain to join this team on signup.
+    #[command(name = "auto-join")]
+    AutoJoin(TeamAutoJoinCmd),
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct TeamVmSharingCmd {
     /// One of admins-only, all-members.
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamAutoJoinCmd {
+    /// One of on, off.
     pub(crate) value: String,
 }
 
@@ -475,6 +510,45 @@ pub(crate) struct TeamVmLsCmd {
     #[arg(long)]
     pub(crate) group: Option<String>,
     pub(crate) pattern: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PoolCmd {
+    #[command(subcommand)]
+    pub(crate) command: PoolSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PoolSubcommand {
+    /// Create a pool: reserved capacity for your team's VMs.
+    New(PoolNewCmd),
+    /// List your team's pools.
+    #[command(alias = "ls")]
+    List,
+    /// Delete a pool (refused while it has VMs; --force detaches them).
+    Delete(PoolDeleteCmd),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PoolNewCmd {
+    pub(crate) name: String,
+    /// Number of CPUs reserved for the pool.
+    #[arg(long)]
+    pub(crate) cpus: String,
+    /// Region code for the pool.
+    #[arg(long)]
+    pub(crate) region: String,
+    /// Maximum number of VMs in the pool (exe.dev default 100).
+    #[arg(long)]
+    pub(crate) max_vms: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PoolDeleteCmd {
+    pub(crate) name: String,
+    /// Detach the pool's VMs instead of refusing to delete it.
+    #[arg(long)]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -568,14 +642,30 @@ pub(crate) struct IntegrationsCmd {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum IntegrationsSubcommand {
-    List,
+    List(IntegrationsListCmd),
     Setup(IntegrationSetupCmd),
     Add(IntegrationAddCmd),
     Edit(IntegrationEditCmd),
     Remove(NameCmd),
+    /// Test an integration's credential (connection check).
+    Test(NameCmd),
     Attach(IntegrationAttachCmd),
-    Detach(IntegrationAttachCmd),
+    Detach(IntegrationDetachCmd),
     Rename(IntegrationRenameCmd),
+    /// Browse the catalog of ready-made service integrations.
+    Catalog(IntegrationsCatalogCmd),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct IntegrationsListCmd {
+    /// Include per-VM usage (lastUsedAt, usedByVMs); requires --json.
+    #[arg(long)]
+    pub(crate) usage: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct IntegrationsCatalogCmd {
+    pub(crate) search_term: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -616,10 +706,16 @@ pub(crate) struct IntegrationAddCmd {
     pub(crate) no_auth: bool,
     #[arg(long)]
     pub(crate) peer: bool,
+    /// Restrict the integration to read access (github only).
+    #[arg(long)]
+    pub(crate) readonly: bool,
     #[arg(long)]
     pub(crate) repository: Option<String>,
     #[arg(long)]
     pub(crate) target: Option<String>,
+    /// Time-box every --attach to a duration from now (e.g. 2h, 45m).
+    #[arg(long = "for")]
+    pub(crate) for_duration: Option<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub(crate) args: Vec<String>,
 }
@@ -643,6 +739,9 @@ pub(crate) struct IntegrationEditCmd {
     pub(crate) header: Vec<String>,
     #[arg(long)]
     pub(crate) no_auth: bool,
+    /// Restrict the integration to read access (github only).
+    #[arg(long)]
+    pub(crate) readonly: bool,
     #[arg(long)]
     pub(crate) repository: Option<String>,
     #[arg(long)]
@@ -663,6 +762,22 @@ pub(crate) struct NameCmd {
 #[derive(Debug, Args)]
 pub(crate) struct IntegrationAttachCmd {
     pub(crate) name: String,
+    /// One of vm:<vm-name>, tag:<tag-name>, auto:all.
+    pub(crate) spec: String,
+    #[arg(long)]
+    pub(crate) team: bool,
+    /// Time-box the attachment to a duration from now (e.g. 2h, 45m).
+    #[arg(long = "for")]
+    pub(crate) for_duration: Option<String>,
+    /// Time-box the attachment until an RFC3339 instant.
+    #[arg(long)]
+    pub(crate) until: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct IntegrationDetachCmd {
+    pub(crate) name: String,
+    /// One of vm:<vm-name>, tag:<tag-name>, auto:all.
     pub(crate) spec: String,
     #[arg(long)]
     pub(crate) team: bool,
@@ -682,6 +797,9 @@ pub(crate) struct BillingCmd {
     pub(crate) command: BillingSubcommand,
 }
 
+// `Update` carries every billing contact field; clap needs it unboxed, and the
+// enum is built once per invocation, so the size difference does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub(crate) enum BillingSubcommand {
     /// Show your current plan and resource limits.
@@ -689,17 +807,23 @@ pub(crate) enum BillingSubcommand {
     /// Show resource usage against your plan.
     Usage(BillingUsageCmd),
     /// Show Shelley credit balances.
-    Credits,
+    Credits(BillingCreditsCmd),
     /// Show invite rewards you've earned.
     Rewards,
     /// Change your subscription capacity.
     Capacity,
+    /// Show and manage your payment methods.
+    Payment(BillingPaymentCmd),
     /// Open the billing page.
     Manage,
+    /// Update your billing contact information.
+    Update(BillingContactCmd),
     /// Show invoices.
     Invoices,
     /// Show receipts for credit purchases.
     Receipts,
+    /// Open a consolidated credit purchase statement.
+    Statement(BillingStatementCmd),
 }
 
 #[derive(Debug, Args)]
@@ -707,6 +831,82 @@ pub(crate) struct BillingUsageCmd {
     /// Time range: cycle, 24h, 7d, or 30d.
     #[arg(long)]
     pub(crate) range: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingCreditsCmd {
+    #[command(subcommand)]
+    pub(crate) command: Option<BillingCreditsSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BillingCreditsSubcommand {
+    /// Show Shelley (LLM) credit spend by model, day, or VM.
+    Usage(BillingCreditsUsageCmd),
+    /// Show your credit purchases and gifts.
+    Transactions(BillingCreditsTransactionsCmd),
+    /// Buy Shelley credits with your personal card.
+    Buy(BillingCreditsBuyCmd),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingCreditsUsageCmd {
+    /// Calendar month to report, as YYYY-MM.
+    #[arg(long)]
+    pub(crate) month: Option<String>,
+    /// Group spend by model, day, or box.
+    #[arg(long)]
+    pub(crate) group: Option<String>,
+    /// Break each group down: models under a day or VM, VMs under a model.
+    #[arg(long)]
+    pub(crate) detail: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingCreditsTransactionsCmd {
+    /// How many transactions to show, 1-100.
+    #[arg(long)]
+    pub(crate) limit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingCreditsBuyCmd {
+    /// Amount in dollars.
+    pub(crate) dollars: String,
+    /// Retry key so a repeated purchase of the same amount charges once.
+    #[arg(long)]
+    pub(crate) idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingPaymentCmd {
+    #[command(subcommand)]
+    pub(crate) command: Option<BillingPaymentSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BillingPaymentSubcommand {
+    /// List all payment methods on file.
+    List,
+    /// Remove a saved payment method.
+    Remove(BillingPaymentRefCmd),
+    /// Make a saved card the default payment method.
+    Default(BillingPaymentRefCmd),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingPaymentRefCmd {
+    pub(crate) reference: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BillingStatementCmd {
+    /// Start of the period, YYYY-MM-DD.
+    #[arg(long = "from")]
+    pub(crate) from_date: Option<String>,
+    /// End of the period, YYYY-MM-DD.
+    #[arg(long = "to")]
+    pub(crate) to_date: Option<String>,
 }
 
 #[derive(Debug, Args)]

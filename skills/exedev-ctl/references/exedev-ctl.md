@@ -199,6 +199,22 @@ exedev-ctl share add-link p1-a-1
 exedev-ctl share remove-link p1-a-1 <token>
 ```
 
+`share add` grants web-proxy access. Add `--root` to grant SSH, Terminal, and
+Shelley access instead, and `share remove --root` to downgrade shell access back
+to web-only:
+
+```sh
+exedev-ctl share add p1-a-1 teammate@example.com --root
+exedev-ctl share remove p1-a-1 teammate@example.com --root
+```
+
+Control inbound and outbound VM email:
+
+```sh
+exedev-ctl share receive-email p1-a-1 on
+exedev-ctl share receive-email p1-a-1 --reply-policy known
+```
+
 Manage custom domains after DNS points at the VM:
 
 ```sh
@@ -215,11 +231,48 @@ exedev-ctl ssh p1-a-1
 ssh p1-a-1.exe.xyz
 ```
 
+`<vm>.exe.xyz` is the usual SSH destination, but exe.dev reports the authoritative
+one as `ssh_dest` in `ls --json`, and it may carry a username prefix such as
+`vm+p1-a-1@exe.dev`. Read `ssh_dest` before hardcoding a hostname in scripts.
+
+Manage team pools (reserved capacity for team VMs):
+
+```sh
+exedev-ctl pool list
+exedev-ctl pool new builders --cpus 16 --region fra --max-vms 20
+exedev-ctl new --name p1-a-1 --pool builders --no-email
+exedev-ctl --yes pool delete builders --force
+```
+
+Manage integrations, including time-boxed and read-only grants:
+
+```sh
+exedev-ctl --json integrations list --usage
+exedev-ctl integrations test my-mcp
+exedev-ctl integrations catalog stripe
+exedev-ctl integrations attach gmail vm:p1-a-1 --for 2h
+exedev-ctl integrations add github --name repo --repository owner/repo --readonly
+```
+
+Report billing and Shelley credit usage:
+
+```sh
+exedev-ctl billing usage --range 7d
+exedev-ctl billing credits usage --group box --detail
+exedev-ctl billing credits transactions --limit 50
+exedev-ctl billing payment list
+```
+
 Run raw exe.dev command:
 
 ```sh
 exedev-ctl exec -- whoami
 ```
+
+`billing provider link` and `exe0-to-exe1` have no typed wrapper on purpose:
+each takes a token as an argument. Run them through `exec --` or `ssh exe.dev`
+so the token is supplied from an environment variable rather than a stored
+wrapper invocation.
 
 ## Token Generation Helper
 

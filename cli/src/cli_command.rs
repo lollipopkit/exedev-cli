@@ -7,6 +7,15 @@ pub(crate) struct BuiltCommand {
     pub(crate) fallback_ssh: bool,
 }
 
+/// exe.dev commands that prompt for confirmation server-side.
+///
+/// Neither `ssh exe.dev <command>` nor `POST /exec` allocates a pty, so that
+/// prompt can never be answered. `--yes` is forwarded for them and the local
+/// dangerous-command guard is what actually asks the user; see
+/// `exedev_core::shell::guard_dangerous_command`.
+const SERVER_CONFIRM_COMMANDS: [&[&str]; 2] =
+    [&["team", "disable"], &["billing", "credits", "buy"]];
+
 pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
     let mut words = Vec::new();
     let mut fallback_ssh = false;
@@ -30,7 +39,6 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
         }
         Commands::New(cmd) => {
             words.push("new".into());
-            push_flag_value(&mut words, "--command", cmd.command.as_ref());
             push_flag_value(&mut words, "--comment", cmd.comment.as_ref());
             push_flag_value(&mut words, "--cpu", cmd.cpu.as_ref());
             push_flag_value(&mut words, "--disk", cmd.disk.as_ref());
@@ -46,6 +54,7 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
             if cmd.no_email {
                 words.push("--no-email".into());
             }
+            push_flag_value(&mut words, "--pool", cmd.pool.as_ref());
             if cmd.prompt.as_deref() == Some("/dev/stdin")
                 || cmd.setup_script.as_deref() == Some("/dev/stdin")
             {
@@ -102,6 +111,7 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
         Commands::Share(cmd) => build_share_command(&mut words, &cmd.command),
         Commands::Domain(cmd) => build_domain_command(&mut words, &cmd.command)?,
         Commands::Team(cmd) => build_team_command(&mut words, cmd.command.as_ref()),
+        Commands::Pool(cmd) => build_pool_command(&mut words, &cmd.command),
         Commands::Invite(cmd) => build_invite_command(&mut words, &cmd.command),
         Commands::Whoami => words.push("whoami".into()),
         Commands::SshKey(cmd) => build_ssh_key_command(&mut words, &cmd.command),
@@ -134,12 +144,27 @@ pub(crate) fn build_command(command: &Commands) -> Result<BuiltCommand> {
             ]);
         }
         Commands::Exit => words.push("exit".into()),
+        // `exec` is a raw passthrough, so it is left exactly as the user typed it.
         Commands::Exec(cmd) => words.extend(cmd.command.clone()),
+    }
+
+    if !matches!(command, Commands::Exec(_)) && needs_server_confirmation(&words) {
+        words.push("--yes".into());
     }
 
     Ok(BuiltCommand {
         words,
         fallback_ssh,
+    })
+}
+
+fn needs_server_confirmation(words: &[String]) -> bool {
+    SERVER_CONFIRM_COMMANDS.iter().any(|command| {
+        words.len() >= command.len()
+            && words
+                .iter()
+                .zip(command.iter())
+                .all(|(word, expected)| word == expected)
     })
 }
 
@@ -164,9 +189,15 @@ fn build_share_command(words: &mut Vec<String>, command: &ShareSubcommand) {
             if cmd.qr {
                 words.push("--qr".into());
             }
+            if cmd.root {
+                words.push("--root".into());
+            }
         }
         ShareSubcommand::Remove(cmd) => {
             words.extend(["remove".into(), cmd.vm.clone(), cmd.target.clone()]);
+            if cmd.root {
+                words.push("--root".into());
+            }
         }
         ShareSubcommand::AddLink(cmd) => {
             words.extend(["add-link".into(), cmd.vm.clone()]);
@@ -180,6 +211,7 @@ fn build_share_command(words: &mut Vec<String>, command: &ShareSubcommand) {
         ShareSubcommand::ReceiveEmail(cmd) => {
             words.extend(["receive-email".into(), cmd.vm.clone()]);
             push_opt(words, cmd.state.as_ref());
+            push_flag_value(words, "--reply-policy", cmd.reply_policy.as_ref());
         }
         ShareSubcommand::Access(cmd) => {
             words.extend(["access".into(), cmd.action.clone(), cmd.vm.clone()]);
@@ -222,11 +254,7 @@ fn build_team_command(words: &mut Vec<String>, command: Option<&TeamSubcommand>)
         return;
     };
     match command {
-        TeamSubcommand::Disable => {
-            // /exec has no pty, so the server-side confirmation prompt cannot
-            // be answered; the local dangerous-command guard already confirmed.
-            words.extend(["disable".into(), "--yes".into()]);
-        }
+        TeamSubcommand::Disable => words.push("disable".into()),
         TeamSubcommand::Members => words.push("members".into()),
         TeamSubcommand::Add(cmd) => words.extend(["add".into(), cmd.email.clone()]),
         TeamSubcommand::Remove(cmd) => words.extend(["remove".into(), cmd.email.clone()]),
@@ -238,19 +266,7 @@ fn build_team_command(words: &mut Vec<String>, command: Option<&TeamSubcommand>)
             words.push("billing".into());
             if let Some(TeamBillingSubcommand::Update(update)) = &cmd.command {
                 words.push("update".into());
-                push_flag_value(words, "--name", update.name.as_ref());
-                push_flag_value(words, "--business-name", update.business_name.as_ref());
-                push_flag_value(words, "--phone", update.phone.as_ref());
-                push_flag_value(words, "--address-line1", update.address_line1.as_ref());
-                push_flag_value(words, "--address-line2", update.address_line2.as_ref());
-                push_flag_value(words, "--address-city", update.address_city.as_ref());
-                push_flag_value(words, "--address-state", update.address_state.as_ref());
-                push_flag_value(
-                    words,
-                    "--address-postal-code",
-                    update.address_postal_code.as_ref(),
-                );
-                push_flag_value(words, "--address-country", update.address_country.as_ref());
+                push_billing_contact_flags(words, update);
             }
         }
         TeamSubcommand::Transfer(cmd) => {
@@ -272,8 +288,14 @@ fn build_team_command(words: &mut Vec<String>, command: Option<&TeamSubcommand>)
         }
         TeamSubcommand::Settings(cmd) => {
             words.push("settings".into());
-            if let Some(TeamSettingsSubcommand::VmSharing(sharing)) = &cmd.command {
-                words.extend(["vm-sharing".into(), sharing.value.clone()]);
+            match &cmd.command {
+                Some(TeamSettingsSubcommand::VmSharing(sharing)) => {
+                    words.extend(["vm-sharing".into(), sharing.value.clone()]);
+                }
+                Some(TeamSettingsSubcommand::AutoJoin(auto_join)) => {
+                    words.extend(["auto-join".into(), auto_join.value.clone()]);
+                }
+                None => {}
             }
         }
         TeamSubcommand::Vm(cmd) => {
@@ -285,6 +307,43 @@ fn build_team_command(words: &mut Vec<String>, command: Option<&TeamSubcommand>)
                 }
                 push_flag_value(words, "--group", ls.group.as_ref());
                 push_opt(words, ls.pattern.as_ref());
+            }
+        }
+    }
+}
+
+fn push_billing_contact_flags(words: &mut Vec<String>, contact: &BillingContactCmd) {
+    push_flag_value(words, "--name", contact.name.as_ref());
+    push_flag_value(words, "--business-name", contact.business_name.as_ref());
+    push_flag_value(words, "--phone", contact.phone.as_ref());
+    push_flag_value(words, "--address-line1", contact.address_line1.as_ref());
+    push_flag_value(words, "--address-line2", contact.address_line2.as_ref());
+    push_flag_value(words, "--address-city", contact.address_city.as_ref());
+    push_flag_value(words, "--address-state", contact.address_state.as_ref());
+    push_flag_value(
+        words,
+        "--address-postal-code",
+        contact.address_postal_code.as_ref(),
+    );
+    push_flag_value(words, "--address-country", contact.address_country.as_ref());
+    push_flag_value(words, "--tax-id-type", contact.tax_id_type.as_ref());
+    push_flag_value(words, "--tax-id-value", contact.tax_id_value.as_ref());
+}
+
+fn build_pool_command(words: &mut Vec<String>, command: &PoolSubcommand) {
+    words.push("pool".into());
+    match command {
+        PoolSubcommand::New(cmd) => {
+            words.extend(["new".into(), cmd.name.clone()]);
+            push_flag_value(words, "--cpus", Some(&cmd.cpus));
+            push_flag_value(words, "--region", Some(&cmd.region));
+            push_flag_value(words, "--max-vms", cmd.max_vms.as_ref());
+        }
+        PoolSubcommand::List => words.push("list".into()),
+        PoolSubcommand::Delete(cmd) => {
+            words.extend(["delete".into(), cmd.name.clone()]);
+            if cmd.force {
+                words.push("--force".into());
             }
         }
     }
@@ -331,7 +390,12 @@ fn build_ssh_key_command(words: &mut Vec<String>, command: &SshKeySubcommand) {
 fn build_integrations_command(words: &mut Vec<String>, command: &IntegrationsSubcommand) {
     words.push("integrations".into());
     match command {
-        IntegrationsSubcommand::List => words.push("list".into()),
+        IntegrationsSubcommand::List(cmd) => {
+            words.push("list".into());
+            if cmd.usage {
+                words.push("--usage".into());
+            }
+        }
         IntegrationsSubcommand::Setup(cmd) => {
             words.extend(["setup".into(), cmd.integration_type.clone()]);
             if cmd.disconnect {
@@ -372,8 +436,12 @@ fn build_integrations_command(words: &mut Vec<String>, command: &IntegrationsSub
             if cmd.peer {
                 words.push("--peer".into());
             }
+            if cmd.readonly {
+                words.push("--readonly".into());
+            }
             push_flag_value(words, "--repository", cmd.repository.as_ref());
             push_flag_value(words, "--target", cmd.target.as_ref());
+            push_flag_value(words, "--for", cmd.for_duration.as_ref());
             words.extend(cmd.args.clone());
         }
         IntegrationsSubcommand::Edit(cmd) => {
@@ -396,6 +464,9 @@ fn build_integrations_command(words: &mut Vec<String>, command: &IntegrationsSub
             if cmd.no_auth {
                 words.push("--no-auth".into());
             }
+            if cmd.readonly {
+                words.push("--readonly".into());
+            }
             push_flag_value(words, "--repository", cmd.repository.as_ref());
             push_flag_value(words, "--target", cmd.target.as_ref());
             push_flag_value(words, "--webhook-url", cmd.webhook_url.as_ref());
@@ -407,11 +478,19 @@ fn build_integrations_command(words: &mut Vec<String>, command: &IntegrationsSub
                 words.push("--team".into());
             }
         }
+        IntegrationsSubcommand::Test(cmd) => {
+            words.extend(["test".into(), cmd.name.clone()]);
+            if cmd.team {
+                words.push("--team".into());
+            }
+        }
         IntegrationsSubcommand::Attach(cmd) => {
             words.extend(["attach".into(), cmd.name.clone(), cmd.spec.clone()]);
             if cmd.team {
                 words.push("--team".into());
             }
+            push_flag_value(words, "--for", cmd.for_duration.as_ref());
+            push_flag_value(words, "--until", cmd.until.as_ref());
         }
         IntegrationsSubcommand::Detach(cmd) => {
             words.extend(["detach".into(), cmd.name.clone(), cmd.spec.clone()]);
@@ -425,6 +504,10 @@ fn build_integrations_command(words: &mut Vec<String>, command: &IntegrationsSub
                 words.push("--team".into());
             }
         }
+        IntegrationsSubcommand::Catalog(cmd) => {
+            words.push("catalog".into());
+            push_opt(words, cmd.search_term.as_ref());
+        }
     }
 }
 
@@ -436,12 +519,55 @@ fn build_billing_command(words: &mut Vec<String>, command: &BillingSubcommand) {
             words.push("usage".into());
             push_flag_value(words, "--range", cmd.range.as_ref());
         }
-        BillingSubcommand::Credits => words.push("credits".into()),
+        BillingSubcommand::Credits(cmd) => {
+            words.push("credits".into());
+            match &cmd.command {
+                Some(BillingCreditsSubcommand::Usage(usage)) => {
+                    words.push("usage".into());
+                    push_flag_value(words, "--month", usage.month.as_ref());
+                    push_flag_value(words, "--group", usage.group.as_ref());
+                    if usage.detail {
+                        words.push("--detail".into());
+                    }
+                }
+                Some(BillingCreditsSubcommand::Transactions(transactions)) => {
+                    words.push("transactions".into());
+                    push_flag_value(words, "--limit", transactions.limit.as_ref());
+                }
+                Some(BillingCreditsSubcommand::Buy(buy)) => {
+                    words.extend(["buy".into(), buy.dollars.clone()]);
+                    push_flag_value(words, "--idempotency-key", buy.idempotency_key.as_ref());
+                }
+                None => {}
+            }
+        }
         BillingSubcommand::Rewards => words.push("rewards".into()),
         BillingSubcommand::Capacity => words.push("capacity".into()),
+        BillingSubcommand::Payment(cmd) => {
+            words.push("payment".into());
+            match &cmd.command {
+                Some(BillingPaymentSubcommand::List) => words.push("list".into()),
+                Some(BillingPaymentSubcommand::Remove(payment)) => {
+                    words.extend(["remove".into(), payment.reference.clone()]);
+                }
+                Some(BillingPaymentSubcommand::Default(payment)) => {
+                    words.extend(["default".into(), payment.reference.clone()]);
+                }
+                None => {}
+            }
+        }
         BillingSubcommand::Manage => words.push("manage".into()),
+        BillingSubcommand::Update(cmd) => {
+            words.push("update".into());
+            push_billing_contact_flags(words, cmd);
+        }
         BillingSubcommand::Invoices => words.push("invoices".into()),
         BillingSubcommand::Receipts => words.push("receipts".into()),
+        BillingSubcommand::Statement(cmd) => {
+            words.push("statement".into());
+            push_flag_value(words, "--from", cmd.from_date.as_ref());
+            push_flag_value(words, "--to", cmd.to_date.as_ref());
+        }
     }
 }
 
@@ -737,6 +863,202 @@ mod tests {
 
         let built = command_from(&["exedev-ctl", "billing", "capacity"]);
         assert_eq!(shell_join(&built.words), "billing capacity");
+
+        let built = command_from(&["exedev-ctl", "billing", "credits"]);
+        assert_eq!(shell_join(&built.words), "billing credits");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "billing",
+            "credits",
+            "usage",
+            "--group",
+            "box",
+            "--detail",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "billing credits usage --group box --detail"
+        );
+
+        let built = command_from(&["exedev-ctl", "billing", "credits", "transactions"]);
+        assert_eq!(shell_join(&built.words), "billing credits transactions");
+
+        let built = command_from(&["exedev-ctl", "billing", "payment", "default", "4f1c2a9b"]);
+        assert_eq!(shell_join(&built.words), "billing payment default 4f1c2a9b");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "billing",
+            "statement",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-06-30",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "billing statement --from 2026-01-01 --to 2026-06-30"
+        );
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "billing",
+            "update",
+            "--tax-id-type",
+            "eu_vat",
+            "--tax-id-value",
+            "DE123",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "billing update --tax-id-type eu_vat --tax-id-value DE123"
+        );
+    }
+
+    #[test]
+    fn billing_credits_buy_forwards_yes() {
+        let built = command_from(&["exedev-ctl", "billing", "credits", "buy", "25"]);
+        assert_eq!(shell_join(&built.words), "billing credits buy 25 --yes");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "billing",
+            "credits",
+            "buy",
+            "100",
+            "--idempotency-key",
+            "retry-1",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "billing credits buy 100 --idempotency-key retry-1 --yes"
+        );
+    }
+
+    #[test]
+    fn server_confirmation_leaves_neighbouring_commands_alone() {
+        let built = command_from(&["exedev-ctl", "billing", "credits", "transactions"]);
+        assert_eq!(shell_join(&built.words), "billing credits transactions");
+
+        let built = command_from(&["exedev-ctl", "team", "members"]);
+        assert_eq!(shell_join(&built.words), "team members");
+    }
+
+    #[test]
+    fn raw_exec_is_passed_through_unchanged() {
+        let built = command_from(&["exedev-ctl", "exec", "--", "team", "disable"]);
+        assert_eq!(shell_join(&built.words), "team disable");
+    }
+
+    #[test]
+    fn builds_pool_commands() {
+        let built = command_from(&[
+            "exedev-ctl",
+            "pool",
+            "new",
+            "builders",
+            "--cpus",
+            "16",
+            "--region",
+            "fra",
+            "--max-vms",
+            "20",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "pool new builders --cpus 16 --region fra --max-vms 20"
+        );
+
+        let built = command_from(&["exedev-ctl", "pool", "ls"]);
+        assert_eq!(shell_join(&built.words), "pool list");
+
+        let built = command_from(&["exedev-ctl", "pool", "delete", "builders", "--force"]);
+        assert_eq!(shell_join(&built.words), "pool delete builders --force");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "new",
+            "--name",
+            "p1-a-1",
+            "--pool",
+            "builders",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "new --name p1-a-1 --pool builders"
+        );
+    }
+
+    #[test]
+    fn builds_share_root_and_reply_policy() {
+        let built = command_from(&["exedev-ctl", "share", "add", "mybox", "team", "--root"]);
+        assert_eq!(shell_join(&built.words), "share add mybox team --root");
+
+        let built = command_from(&["exedev-ctl", "share", "remove", "mybox", "team", "--root"]);
+        assert_eq!(shell_join(&built.words), "share remove mybox team --root");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "share",
+            "receive-email",
+            "mybox",
+            "on",
+            "--reply-policy",
+            "known",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "share receive-email mybox on --reply-policy known"
+        );
+    }
+
+    #[test]
+    fn builds_integrations_grant_commands() {
+        let built = command_from(&["exedev-ctl", "integrations", "list", "--usage"]);
+        assert_eq!(shell_join(&built.words), "integrations list --usage");
+
+        let built = command_from(&["exedev-ctl", "int", "test", "myproxy", "--team"]);
+        assert_eq!(shell_join(&built.words), "integrations test myproxy --team");
+
+        let built = command_from(&["exedev-ctl", "int", "catalog", "stripe"]);
+        assert_eq!(shell_join(&built.words), "integrations catalog stripe");
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "int",
+            "attach",
+            "gmail",
+            "vm:dev1",
+            "--for",
+            "2h",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "integrations attach gmail vm:dev1 --for 2h"
+        );
+
+        let built = command_from(&[
+            "exedev-ctl",
+            "int",
+            "add",
+            "github",
+            "--name",
+            "repo",
+            "--repository",
+            "octocat/hello",
+            "--readonly",
+        ]);
+        assert_eq!(
+            shell_join(&built.words),
+            "integrations add github --name repo --readonly --repository octocat/hello"
+        );
+    }
+
+    #[test]
+    fn builds_team_auto_join() {
+        let built = command_from(&["exedev-ctl", "team", "settings", "auto-join", "off"]);
+        assert_eq!(shell_join(&built.words), "team settings auto-join off");
     }
 
     #[test]

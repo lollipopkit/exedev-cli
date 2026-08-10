@@ -157,9 +157,17 @@ ssh exe.dev ...
 CLI 覆盖 exe.dev CLI Reference 中的 top-level commands：
 
 ```text
-help doc ls new rm restart rename tag stat cp resize share domain team whoami
-ssh-key set-region integrations billing shelley browser ssh grant-support-root
-exit exec
+help doc ls new rm restart rename tag comment stat cp resize share domain team
+pool invite whoami ssh-key set-region integrations billing shelley browser ssh
+grant-support-root exit exec
 ```
 
 `exec` 是未来 exe.dev commands 尚未提供 typed wrapper 时的 fallback command。
+
+有两个已文档化的 command 不提供 typed wrapper：它们都以 argument 传递 secret，
+包装后只会更容易把 secret 写进 shell history 和进程表。
+
+```sh
+exedev-ctl exec -- billing provider link aws --token=...
+exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
+```

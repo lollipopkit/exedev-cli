@@ -2,7 +2,7 @@ use crate::output;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use exedev_core::shell;
-use std::{path::Path, process::Stdio};
+use std::{collections::BTreeMap, path::Path, process::Stdio};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
 use tokio::time::{Duration, sleep};
@@ -28,9 +28,28 @@ pub(super) struct RemoteCommandOutput {
     status: i32,
 }
 
-pub(super) async fn remote_run(vm: &str, script: &str) -> Result<()> {
+/// SSH destinations for fleet VMs, keyed by VM name.
+#[derive(Debug, Default)]
+pub(super) struct SshTargets(BTreeMap<String, String>);
+
+impl SshTargets {
+    pub(super) fn new(destinations: BTreeMap<String, String>) -> Self {
+        Self(destinations)
+    }
+
+    /// The destination reported by exe.dev, or the `<vm>.exe.xyz` hostname when
+    /// exe.dev did not report one (for example a VM outside this account's `ls`).
+    pub(super) fn dest(&self, vm: &str) -> String {
+        self.0
+            .get(vm)
+            .cloned()
+            .unwrap_or_else(|| format!("{vm}.exe.xyz"))
+    }
+}
+
+pub(super) async fn remote_run(targets: &SshTargets, vm: &str, script: &str) -> Result<()> {
     loop {
-        let output = remote_command_output(vm, script).await?;
+        let output = remote_command_output(targets, vm, script).await?;
         if !output.stdout.is_empty() {
             print!("{}", output.stdout);
             if !output.stdout.ends_with('\n') {
@@ -73,8 +92,8 @@ fn confirm_tailnet_lock_retry(vm: &str) -> Result<bool> {
         .context("failed to read Tailnet Lock confirmation")
 }
 
-pub(super) async fn remote_capture(vm: &str, script: &str) -> Result<String> {
-    let output = remote_command_output(vm, script).await?;
+pub(super) async fn remote_capture(targets: &SshTargets, vm: &str, script: &str) -> Result<String> {
+    let output = remote_command_output(targets, vm, script).await?;
     if output.status != 0 {
         let detail = [output.stdout.trim(), output.stderr.trim()]
             .into_iter()
@@ -95,16 +114,24 @@ pub(super) async fn remote_capture(vm: &str, script: &str) -> Result<String> {
     Ok(output.stdout)
 }
 
-pub(super) async fn remote_command_output(vm: &str, script: &str) -> Result<RemoteCommandOutput> {
+pub(super) async fn remote_command_output(
+    targets: &SshTargets,
+    vm: &str,
+    script: &str,
+) -> Result<RemoteCommandOutput> {
     let wrapped_script = remote_status_script(vm, script);
-    let args = remote_ssh_args(vm);
+    let args = remote_ssh_args(&targets.dest(vm));
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let output = capture_remote_ssh_output(&refs, &wrapped_script).await?;
     parse_remote_command_output(vm, output)
 }
 
-pub(super) async fn verify_vm_access(vm: &str, fleet_path: &Path) -> Result<()> {
-    remote_run(vm, "true").await.with_context(|| {
+pub(super) async fn verify_vm_access(
+    targets: &SshTargets,
+    vm: &str,
+    fleet_path: &Path,
+) -> Result<()> {
+    remote_run(targets, vm, "true").await.with_context(|| {
         format!(
             "VM name {vm} is unavailable but SSH access could not be verified; recover with `exedev-k8s destroy --fleet {} --all-planned`, or choose another vmPrefix",
             fleet_path.display()
@@ -295,7 +322,7 @@ pub(super) fn display_command(program: &str, args: &[&str]) -> String {
     redact_command_secrets(&shell::shell_join(&words))
 }
 
-pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
+pub(super) fn remote_ssh_args(dest: &str) -> Vec<String> {
     vec![
         "-o".into(),
         "ControlMaster=no".into(),
@@ -305,7 +332,7 @@ pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
         "ConnectTimeout=15".into(),
-        format!("{vm}.exe.xyz"),
+        dest.to_string(),
         "sh".into(),
         "-s".into(),
     ]

@@ -33,14 +33,15 @@ Check the current environment and scope before proposing changes:
 - Verify `EXE_DEV_API_KEY` is present for HTTPS `/exec` operations.
 - Use `exedev-ctl --json ls` to inspect current VMs.
 - Treat destructive VM actions as high risk. Require explicit confirmation before `rm`, bulk deletion, or operations that could lose disk state unless the user already asked for that exact action.
+- Treat access grants as high risk too. `share add <vm> <target> --root` and `share access allow <vm>` give SSH, Terminal, and Shelley access, not web-only access; `billing credits buy` spends money. The CLI prompts for these unless `--yes` is passed.
 - When a token returns `403`, inspect token permissions before assuming a VM or CLI bug.
 - When `/exec` returns `422`, surface the exe.dev command failure body.
 
 ## Command Selection
 
-Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
+Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `pool`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
 
-Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper.
+Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper. `billing provider link` and `exe0-to-exe1` have no wrapper on purpose: both take a token as an argument, so run them through `exec --` or `ssh exe.dev` and keep the token out of persisted history.
 
 Use `--json` when output must be parsed, compared, or included in automation.
 

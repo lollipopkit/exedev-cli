@@ -9,6 +9,9 @@ pub(super) struct KubernetesNode {
     pub(super) taints: BTreeSet<String>,
 }
 
+/// JSON keys that can hold a VM name, most specific first.
+const VM_NAME_KEYS: [&str; 5] = ["name", "vm", "vmname", "vmName", "vm_name"];
+
 pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -39,7 +42,7 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
             }
         }
         Value::Object(object) => {
-            for key in ["name", "vm", "vmname", "vmName", "vm_name"] {
+            for key in VM_NAME_KEYS {
                 if let Some(name) = object.get(key).and_then(Value::as_str) {
                     names.insert(name.to_string());
                     return;
@@ -52,6 +55,65 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Map VM name to the SSH destination reported by `exe.dev ls`.
+///
+/// exe.dev hostnames usually route SSH directly, but `ssh_dest` may carry a
+/// username prefix (for example `vm+bloggy@exe.dev`) when they do not. VMs whose
+/// destination cannot be read are left out, and the caller falls back to the
+/// `<vm>.exe.xyz` hostname.
+pub(super) fn parse_ssh_destinations(response: &str) -> BTreeMap<String, String> {
+    let mut destinations = BTreeMap::new();
+    if let Ok(value) = serde_json::from_str::<Value>(response.trim()) {
+        collect_ssh_destinations(&value, &mut destinations);
+    }
+    destinations
+}
+
+fn collect_ssh_destinations(value: &Value, destinations: &mut BTreeMap<String, String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_ssh_destinations(item, destinations);
+            }
+        }
+        Value::Object(object) => {
+            let name = VM_NAME_KEYS
+                .iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_str));
+            if let Some(name) = name {
+                if let Some(destination) = ssh_destination_from_object(object) {
+                    destinations.insert(name.to_string(), destination);
+                }
+                return;
+            }
+            for key in ["vms", "items", "data"] {
+                if let Some(child) = object.get(key) {
+                    collect_ssh_destinations(child, destinations);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ssh_destination_from_object(object: &serde_json::Map<String, Value>) -> Option<String> {
+    let text = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(dest) = text("ssh_dest").or_else(|| text("sshDest")) {
+        return Some(dest.to_string());
+    }
+    let host = text("ssh_host").or_else(|| text("sshHost"))?;
+    match text("ssh_user").or_else(|| text("sshUser")) {
+        Some(user) => Some(format!("{user}@{host}")),
+        None => Some(host.to_string()),
     }
 }
 

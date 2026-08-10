@@ -1,7 +1,7 @@
 # exe.dev API Reference Notes
 
 This file records the exe.dev API documentation that this repository depends
-on. It was last checked on 2026-07-10 from these source pages:
+on. It was last checked on 2026-08-10 from these source pages:
 
 - <https://exe.dev/docs/api>
 - <https://exe.dev/docs/login-with-exe>
@@ -11,7 +11,10 @@ on. It was last checked on 2026-07-10 from these source pages:
 
 Each page is also available as raw markdown by appending `.md` to the URL,
 for example <https://exe.dev/docs/https-api.md>. The full command list lives
-in the CLI reference at <https://exe.dev/docs/section/10-cli-reference>.
+in the CLI reference at <https://exe.dev/docs/section/11-cli-reference>.
+The whole documentation set is published as a single file at
+<https://exe.dev/llms-full.txt>, which is the fastest way to diff this
+repository against upstream.
 
 ## API shape
 
@@ -43,10 +46,18 @@ Example `ls --json` VM object shape:
   "region": "lon",
   "region_display": "London, UK",
   "ssh_dest": "bloggy.exe.xyz",
+  "ssh_host": "bloggy.exe.xyz",
   "status": "running",
   "vm_name": "bloggy"
 }
 ```
+
+`ssh_dest` is a ready-to-use `ssh`/`scp` destination. It may carry a username
+prefix such as `vm+bloggy@exe.dev` when the VM hostname cannot route SSH
+directly, so automation must not assume the destination is always
+`<vm_name>.exe.xyz`. Tools that need the parts separately read `ssh_host` (the
+network host to dial) and `ssh_user` (the username the routing requires;
+absent when any username works).
 
 Minimal HTTPS request:
 
@@ -299,12 +310,17 @@ This repository uses the exe.dev HTTPS command API through
 - `exedev-ctl` wraps the exe.dev command surface, including `ls`, `new`, `rm`,
   `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share` (show,
   port, set-public, set-private, add, remove, add-link, remove-link,
-  receive-email, access), `domain` (add, ls, rm), `team`, `invite`, `whoami`,
-  `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, and
-  raw `exec`.
+  receive-email, access), `domain` (add, ls, rm), `team`, `pool`, `invite`,
+  `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`,
+  `browser`, and raw `exec`.
+- Two documented commands are deliberately left to `exec`, because both take a
+  secret as a positional argument or flag value and would otherwise land in
+  shell history and the process list: `billing provider link --token=...` and
+  `exe0-to-exe1 <token>`. Pipe those through `ssh exe.dev` instead.
 - `exedev-k8s` uses exe.dev VM commands as the infrastructure layer for k3s
   fleet bootstrapping; against exe.dev itself it only needs `ls`, `new`, and
-  `rm` (node provisioning happens over direct SSH to the VMs).
+  `rm` (node provisioning happens over direct SSH to the VMs). It reads
+  `ssh_dest` from `ls` to reach each node, falling back to `<vm>.exe.xyz`.
 
 For local scripts and manual debugging, prefer:
 

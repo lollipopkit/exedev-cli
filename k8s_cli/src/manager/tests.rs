@@ -1,8 +1,8 @@
 use super::super::fleet::NodeSpec;
 use super::kubectl::kubeconfig_args;
-use super::parsing::{parse_kubernetes_nodes, parse_vm_names};
+use super::parsing::{parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
 use super::process::{
-    command_output_detail, display_command, parse_remote_stdout, remote_ssh_args,
+    SshTargets, command_output_detail, display_command, parse_remote_stdout, remote_ssh_args,
     remote_status_script,
 };
 use super::scripts::{
@@ -139,7 +139,7 @@ fn k3s_agent_install_command_supports_no_supervisor_fallback() {
 
 #[test]
 fn builds_remote_ssh_command_for_stdin_script() {
-    let args = remote_ssh_args("vm-1");
+    let args = remote_ssh_args("vm-1.exe.xyz");
     assert_eq!(args.len(), 11);
     assert_eq!(args[0], "-o");
     assert_eq!(args[1], "ControlMaster=no");
@@ -152,6 +152,35 @@ fn builds_remote_ssh_command_for_stdin_script() {
     assert_eq!(args[8], "vm-1.exe.xyz");
     assert_eq!(args[9], "sh");
     assert_eq!(args[10], "-s");
+}
+
+#[test]
+fn parses_ssh_destinations_from_ls_json() {
+    let destinations = parse_ssh_destinations(
+        r#"{"vms":[
+            {"vm_name":"routable","ssh_dest":"routable.exe.xyz","ssh_host":"routable.exe.xyz"},
+            {"vm_name":"prefixed","ssh_dest":"vm+prefixed@exe.dev","ssh_host":"exe.dev","ssh_user":"vm+prefixed"},
+            {"vm_name":"host-only","ssh_host":"shard3.exe.dev","ssh_user":"vm+host-only"},
+            {"vm_name":"unknown"}
+        ]}"#,
+    );
+    assert_eq!(destinations.get("routable").unwrap(), "routable.exe.xyz");
+    assert_eq!(destinations.get("prefixed").unwrap(), "vm+prefixed@exe.dev");
+    assert_eq!(
+        destinations.get("host-only").unwrap(),
+        "vm+host-only@shard3.exe.dev"
+    );
+    assert!(!destinations.contains_key("unknown"));
+}
+
+#[test]
+fn ssh_targets_fall_back_to_exe_xyz_hostname() {
+    let targets = SshTargets::new(parse_ssh_destinations(
+        r#"[{"vm_name":"vm-1","ssh_dest":"vm+vm-1@exe.dev"}]"#,
+    ));
+    assert_eq!(targets.dest("vm-1"), "vm+vm-1@exe.dev");
+    assert_eq!(targets.dest("vm-2"), "vm-2.exe.xyz");
+    assert_eq!(SshTargets::default().dest("vm-3"), "vm-3.exe.xyz");
 }
 
 #[test]

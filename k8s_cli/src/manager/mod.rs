@@ -33,8 +33,8 @@ use kubectl::{
     KUBECTL_PROBE_REQUEST_TIMEOUT, kubectl_apply, kubectl_capture, kubectl_capture_with_timeout,
     kubectl_run_owned,
 };
-use parsing::{parse_kubernetes_nodes, parse_vm_names};
-use process::{ensure_tool, remote_capture, remote_run, verify_vm_access};
+use parsing::{parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
+use process::{SshTargets, ensure_tool, remote_capture, remote_run, verify_vm_access};
 use scripts::{
     k3s_agent_install_command, k3s_server_install_command, remote_bootstrap_script,
     remote_privileged_script, tailscale_install_command,
@@ -77,17 +77,37 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
         require_env(K3S_TOKEN_ENV)?;
     }
     let include_control_plane = cmd.mode == ClusterMode::New;
-    let current = fetch_current_vms(endpoint).await?;
-    print_bootstrap_plan(&plan, cmd.mode, &current, cmd.manifests.as_deref());
+    let inventory = fetch_inventory(endpoint).await?;
+    print_bootstrap_plan(&plan, cmd.mode, &inventory.names, cmd.manifests.as_deref());
     confirm("Run this bootstrap plan?", yes)?;
 
     let client = exe_client(endpoint)?;
-    create_missing_vms(&client, &plan, include_control_plane, &current, &cmd.fleet).await?;
-    let new_cluster_access =
-        bootstrap_k3s(&plan, cmd.mode, &ts_authkey, cmd.kubeconfig.as_deref()).await?;
+    create_missing_vms(
+        &client,
+        &plan,
+        include_control_plane,
+        &inventory,
+        &cmd.fleet,
+    )
+    .await?;
+    // Re-read the VM list so VMs created above contribute their SSH destination.
+    let inventory = fetch_inventory(endpoint).await?;
+    let new_cluster_access = bootstrap_k3s(
+        &plan,
+        cmd.mode,
+        &ts_authkey,
+        cmd.kubeconfig.as_deref(),
+        &inventory.ssh_targets,
+    )
+    .await?;
 
     let kubeconfig = kubeconfig_for_bootstrap(&plan, cmd.mode, cmd.kubeconfig.as_deref());
-    wait_for_kubernetes_api(kubeconfig.as_deref(), new_cluster_access.as_ref()).await?;
+    wait_for_kubernetes_api(
+        kubeconfig.as_deref(),
+        new_cluster_access.as_ref(),
+        &inventory.ssh_targets,
+    )
+    .await?;
     wait_for_kubernetes_nodes(&plan, include_control_plane, kubeconfig.as_deref()).await?;
     apply_node_metadata(&plan, include_control_plane, kubeconfig.as_deref()).await?;
     if let Some(manifests) = cmd.manifests {
@@ -150,10 +170,23 @@ fn exe_client(endpoint: &str) -> Result<ExeDevClient> {
     Ok(ExeDevClient::new(endpoint.to_string(), api_key))
 }
 
-async fn fetch_current_vms(endpoint: &str) -> Result<BTreeSet<String>> {
+/// The exe.dev VMs this account can see, and how to reach each over SSH.
+struct VmInventory {
+    names: BTreeSet<String>,
+    ssh_targets: SshTargets,
+}
+
+async fn fetch_inventory(endpoint: &str) -> Result<VmInventory> {
     let client = exe_client(endpoint)?;
     let response = client.exec("ls").await?;
-    parse_vm_names(&response).context("failed to parse exe.dev ls response")
+    Ok(VmInventory {
+        names: parse_vm_names(&response).context("failed to parse exe.dev ls response")?,
+        ssh_targets: SshTargets::new(parse_ssh_destinations(&response)),
+    })
+}
+
+async fn fetch_current_vms(endpoint: &str) -> Result<BTreeSet<String>> {
+    Ok(fetch_inventory(endpoint).await?.names)
 }
 
 fn print_bootstrap_plan(
@@ -281,11 +314,11 @@ async fn create_missing_vms(
     client: &ExeDevClient,
     plan: &FleetPlan,
     include_control_plane: bool,
-    current: &BTreeSet<String>,
+    inventory: &VmInventory,
     fleet_path: &Path,
 ) -> Result<()> {
     for node in plan.bootstrap_nodes(include_control_plane) {
-        if current.contains(&node.name) {
+        if inventory.names.contains(&node.name) {
             continue;
         }
         let command = exe_new_command(node);
@@ -297,7 +330,7 @@ async fn create_missing_vms(
                     output::warn("exe.dev:"),
                     output::vm(&node.name)
                 );
-                verify_vm_access(&node.name, fleet_path).await?;
+                verify_vm_access(&inventory.ssh_targets, &node.name, fleet_path).await?;
                 println!(
                     "{} verified SSH access to {}; continuing",
                     output::success("exe.dev:"),
@@ -316,6 +349,7 @@ async fn bootstrap_k3s(
     mode: ClusterMode,
     ts_authkey: &str,
     kubeconfig_arg: Option<&Path>,
+    targets: &SshTargets,
 ) -> Result<Option<NewClusterAccess>> {
     match mode {
         ClusterMode::New => {
@@ -323,8 +357,9 @@ async fn bootstrap_k3s(
                 .control_plane()
                 .context("fleet has no control-plane node")?;
             let mut token = read_or_create_k3s_token(&plan.cluster_name)?;
-            install_tailscale(&control.name, ts_authkey).await?;
-            let control_ip = remote_capture(&control.name, "tailscale ip -4 | head -n1").await?;
+            install_tailscale(targets, &control.name, ts_authkey).await?;
+            let control_ip =
+                remote_capture(targets, &control.name, "tailscale ip -4 | head -n1").await?;
             let control_ip = control_ip.trim();
             if control_ip.is_empty() {
                 bail!("failed to detect Tailscale IPv4 for {}", control.name);
@@ -332,11 +367,11 @@ async fn bootstrap_k3s(
             let control_ip_addr = control_ip.parse::<Ipv4Addr>().with_context(|| {
                 format!("invalid Tailscale IPv4 for {}: {control_ip}", control.name)
             })?;
-            install_k3s_server(&control.name, &token, control_ip, control_ip).await?;
+            install_k3s_server(targets, &control.name, &token, control_ip, control_ip).await?;
             let k3s_url = format!("https://{control_ip}:6443");
-            token = fetch_k3s_node_token(&control.name).await?;
+            token = fetch_k3s_node_token(targets, &control.name).await?;
             write_secret_file(&generated_token_path(&plan.cluster_name), &token)?;
-            let kubeconfig = fetch_kubeconfig(&control.name, control_ip).await?;
+            let kubeconfig = fetch_kubeconfig(targets, &control.name, control_ip).await?;
             let kubeconfig_path = kubeconfig_arg
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| generated_kubeconfig_path(&plan.cluster_name));
@@ -352,9 +387,9 @@ async fn bootstrap_k3s(
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                install_tailscale(targets, &node.name, ts_authkey).await?;
+                let node_ip = fetch_tailscale_ip(targets, &node.name).await?;
+                install_k3s_agent(targets, &node.name, &k3s_url, &token, &node_ip).await?;
             }
             Ok(Some(NewClusterAccess {
                 control_name: control.name.clone(),
@@ -375,35 +410,47 @@ async fn bootstrap_k3s(
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                install_tailscale(targets, &node.name, ts_authkey).await?;
+                let node_ip = fetch_tailscale_ip(targets, &node.name).await?;
+                install_k3s_agent(targets, &node.name, &k3s_url, &token, &node_ip).await?;
             }
             Ok(None)
         }
     }
 }
 
-async fn install_tailscale(vm: &str, authkey: &str) -> Result<()> {
+async fn install_tailscale(targets: &SshTargets, vm: &str, authkey: &str) -> Result<()> {
     let command = tailscale_install_command(authkey);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn install_k3s_server(vm: &str, token: &str, tls_san: &str, node_ip: &str) -> Result<()> {
+async fn install_k3s_server(
+    targets: &SshTargets,
+    vm: &str,
+    token: &str,
+    tls_san: &str,
+    node_ip: &str,
+) -> Result<()> {
     let command = k3s_server_install_command(vm, token, tls_san, node_ip);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn install_k3s_agent(vm: &str, k3s_url: &str, token: &str, node_ip: &str) -> Result<()> {
+async fn install_k3s_agent(
+    targets: &SshTargets,
+    vm: &str,
+    k3s_url: &str,
+    token: &str,
+    node_ip: &str,
+) -> Result<()> {
     let command = k3s_agent_install_command(vm, k3s_url, token, node_ip);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn fetch_tailscale_ip(vm: &str) -> Result<String> {
-    let ip = remote_capture(vm, "tailscale ip -4 | head -n1").await?;
+async fn fetch_tailscale_ip(targets: &SshTargets, vm: &str) -> Result<String> {
+    let ip = remote_capture(targets, vm, "tailscale ip -4 | head -n1").await?;
     let ip = ip.trim();
     if ip.is_empty() {
         bail!("failed to detect Tailscale IPv4 for {vm}");
@@ -413,9 +460,9 @@ async fn fetch_tailscale_ip(vm: &str) -> Result<String> {
     Ok(ip.to_string())
 }
 
-async fn fetch_kubeconfig(vm: &str, control_ip: &str) -> Result<String> {
+async fn fetch_kubeconfig(targets: &SshTargets, vm: &str, control_ip: &str) -> Result<String> {
     let script = remote_privileged_script("${SUDO} cat /etc/rancher/k3s/k3s.yaml");
-    let kubeconfig = remote_capture(vm, &script).await?;
+    let kubeconfig = remote_capture(targets, vm, &script).await?;
     Ok(kubeconfig
         .replace(
             "https://127.0.0.1:6443",
@@ -427,9 +474,9 @@ async fn fetch_kubeconfig(vm: &str, control_ip: &str) -> Result<String> {
         ))
 }
 
-async fn fetch_k3s_node_token(vm: &str) -> Result<String> {
+async fn fetch_k3s_node_token(targets: &SshTargets, vm: &str) -> Result<String> {
     let script = remote_privileged_script("${SUDO} cat /var/lib/rancher/k3s/server/node-token");
-    remote_capture(vm, &script)
+    remote_capture(targets, vm, &script)
         .await
         .map(|token| token.trim().to_string())
         .with_context(|| format!("failed to fetch k3s node token from {vm}"))
@@ -438,6 +485,7 @@ async fn fetch_k3s_node_token(vm: &str) -> Result<String> {
 async fn wait_for_kubernetes_api(
     kubeconfig: Option<&Path>,
     new_cluster_access: Option<&NewClusterAccess>,
+    targets: &SshTargets,
 ) -> Result<()> {
     println!(
         "{}",
@@ -466,7 +514,7 @@ async fn wait_for_kubernetes_api(
     }
     if let Some(access) = new_cluster_access {
         let local_detail = local_kubernetes_api_detail(access.control_ip);
-        let remote_detail = diagnose_control_plane(&access.control_name)
+        let remote_detail = diagnose_control_plane(targets, &access.control_name)
             .await
             .unwrap_or_else(|err| format!("failed to collect remote diagnostics: {err}"));
         bail!(
@@ -492,7 +540,7 @@ fn tailscale_policy_hint() -> &'static str {
     "Tailscale policy hint: ensure workers can reach the control-plane on tcp:6443, for example tag:server -> tag:server tcp:6443, and ensure your local kubectl client can reach the control-plane on tcp:6443."
 }
 
-async fn diagnose_control_plane(control_name: &str) -> Result<String> {
+async fn diagnose_control_plane(targets: &SshTargets, control_name: &str) -> Result<String> {
     let script = remote_privileged_script(
         r#"
 echo "k3s readyz from control-plane:"
@@ -518,7 +566,7 @@ tailscale ip -4 2>&1 || true
 tailscale status --self 2>&1 || true
 "#,
     );
-    remote_capture(control_name, &script).await
+    remote_capture(targets, control_name, &script).await
 }
 
 async fn wait_for_kubernetes_nodes(

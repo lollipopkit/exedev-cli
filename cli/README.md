@@ -159,10 +159,19 @@ These commands require local SSH access to exe.dev.
 The CLI covers the top-level commands from the exe.dev CLI Reference:
 
 ```text
-help doc ls new rm restart rename tag stat cp resize share domain team whoami
-ssh-key set-region integrations billing shelley browser ssh grant-support-root
-exit exec
+help doc ls new rm restart rename tag comment stat cp resize share domain team
+pool invite whoami ssh-key set-region integrations billing shelley browser ssh
+grant-support-root exit exec
 ```
 
 `exec` is the fallback command for future exe.dev commands that do not yet have
 a typed wrapper.
+
+Two documented commands are intentionally left to `exec`, because each takes a
+secret as an argument and a typed wrapper would only make it easier to leak it
+into shell history and the process list:
+
+```sh
+exedev-ctl exec -- billing provider link aws --token=...
+exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
+```
