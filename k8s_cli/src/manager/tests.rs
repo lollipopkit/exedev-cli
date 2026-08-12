@@ -14,7 +14,10 @@ use super::state::{
     generated_kubeconfig_path, generated_token_path, read_regular_file, write_secret_file,
 };
 use super::*;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 #[test]
 fn parses_vm_names_from_json_array() {
@@ -620,4 +623,29 @@ fn secret_writes_reject_a_symlinked_state_directory() {
     let err = result.unwrap_err().to_string();
     std::fs::remove_dir_all(&root).unwrap();
     assert!(err.contains("not a real directory"), "unexpected: {err}");
+}
+
+#[test]
+fn mixed_outer_and_wrapped_listings_are_merged() {
+    let response = r#"{"vms":[{"vm_name":"outer","ssh_dest":"vm+outer@exe.dev"}],"output":"[{\"vm_name\":\"inner\",\"ssh_dest\":\"vm+inner@exe.dev\"}]"}"#;
+    let names = parse_vm_names(response).unwrap();
+    assert!(names.contains("outer"), "outer missing: {names:?}");
+    assert!(names.contains("inner"), "inner missing: {names:?}");
+
+    let destinations = parse_ssh_destinations(response);
+    assert_eq!(destinations.get("outer").unwrap(), "vm+outer@exe.dev");
+    assert_eq!(destinations.get("inner").unwrap(), "vm+inner@exe.dev");
+}
+
+#[test]
+fn bare_json_strings_must_look_like_vm_names() {
+    // Prose in a string array is rejected on shape. A single lowercase word is
+    // not: `error` is a valid VM name, and no shape test can tell it apart from
+    // one. The wrapper handling above is what keeps error payloads out of here.
+    let names = parse_vm_names(r#"["Error:", "quota exceeded", "VM", "vm-1"]"#).unwrap();
+    assert_eq!(names, BTreeSet::from(["vm-1".to_string()]));
+
+    let names = parse_vm_names(r#"["vm-1","vm-2"]"#).unwrap();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains("vm-1"));
 }

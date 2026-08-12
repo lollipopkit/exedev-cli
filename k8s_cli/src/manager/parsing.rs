@@ -20,23 +20,16 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         let mut names = BTreeSet::new();
         collect_vm_names_from_json(&value, &mut names);
-        if !names.is_empty() {
-            return Ok(names);
-        }
         if let Some(output) = value.get("output").and_then(Value::as_str) {
             // The wrapper carries either the serialized listing or a rendered
-            // table. Decode it as JSON first, the way `parse_ssh_destinations`
-            // does: reading a serialized listing as text yields fragments of the
-            // JSON as VM names, and bootstrap would then recreate VMs it already
-            // has.
+            // table, and is read whether or not the outer object also listed
+            // something: skipping it when the outer had any entry would drop the
+            // rest, and bootstrap would recreate VMs that already exist.
             if let Ok(inner) = serde_json::from_str::<Value>(output.trim()) {
                 collect_vm_names_from_json(&inner, &mut names);
-                // Whatever the listing held is the answer, including nothing. A
-                // wrapped `[]` or an error object handed to the text parser would
-                // come back as a VM named after the JSON itself.
-                return Ok(names);
+            } else if names.is_empty() {
+                return Ok(parse_vm_names_from_text(output));
             }
-            return Ok(parse_vm_names_from_text(output));
         }
         // A response that parsed as JSON has already been searched. Handing its
         // serialized form to the text parser would take `{"vms":[]}` apart into
@@ -51,7 +44,12 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
         Value::Array(items) => {
             for item in items {
                 if let Some(name) = item.as_str() {
-                    names.insert(name.to_string());
+                    // A bare string carries no field saying it is a VM, so an
+                    // array like ["error", "quota exceeded"] would otherwise
+                    // become inventory and suppress creating the real VM.
+                    if is_vm_name(name) {
+                        names.insert(name.to_string());
+                    }
                 } else {
                     collect_vm_names_from_json(item, names);
                 }
@@ -86,16 +84,14 @@ pub(super) fn parse_ssh_destinations(response: &str) -> BTreeMap<String, String>
         return destinations;
     };
     collect_ssh_destinations(&value, &mut destinations);
-    if destinations.is_empty() {
-        // Same wrapper `parse_vm_names` falls back to. When it holds a rendered
-        // table there is nothing to find and the caller keeps the hostname
-        // fallback; when it holds the serialized listing, the destinations are
-        // in there and are the authoritative ones.
-        if let Some(output) = value.get("output").and_then(Value::as_str)
-            && let Ok(inner) = serde_json::from_str::<Value>(output.trim())
-        {
-            collect_ssh_destinations(&inner, &mut destinations);
-        }
+    // Same wrapper `parse_vm_names` reads, and read on the same terms: when it
+    // holds a rendered table there is nothing to find and the caller keeps the
+    // hostname fallback; when it holds the serialized listing, its destinations
+    // are authoritative, including for VMs the outer object did not mention.
+    if let Some(output) = value.get("output").and_then(Value::as_str)
+        && let Ok(inner) = serde_json::from_str::<Value>(output.trim())
+    {
+        collect_ssh_destinations(&inner, &mut destinations);
     }
     destinations
 }

@@ -38,21 +38,18 @@ if [[ -z "$RELEASE_TAG" ]]; then
   RELEASE_TAG="$(gh release view --repo "$REPO_SLUG" --json tagName -q .tagName)"
 fi
 
-VERSION="${RELEASE_TAG#v}"
-
 # Every value below is interpolated into download URLs, local file paths, and
 # double-quoted Ruby strings in the formula. Validate them here rather than
 # escaping at each use: a stray quote, newline, or slash otherwise produces a
 # formula that generation reports as a success and Homebrew cannot parse.
-SEMVER_NUM='(0|[1-9][0-9]*)'
-SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
-
-if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
-  echo "release tag is not a semantic version: $RELEASE_TAG" >&2
-  echo "Expected something like v0.1.11 or 1.2.3-rc.1+build.5." >&2
+#
+# The tag goes through the same grammar the release workflow uses, which pins
+# LC_ALL so its ASCII ranges do not depend on the caller's locale.
+if ! VERSION="$("$SCRIPT_DIR/check-version.sh" "$RELEASE_TAG")"; then
   exit 1
 fi
+
+LC_ALL=C
 
 if [[ ! "$REPO_SLUG" =~ ^[0-9A-Za-z._-]+/[0-9A-Za-z._-]+$ ]]; then
   echo "REPO_SLUG is not an owner/repo slug: $REPO_SLUG" >&2
@@ -148,28 +145,25 @@ if [[ -L "$TAP_FORMULA_PATH" ]]; then
   exit 1
 fi
 
-# An explicit path gets the same confinement as a discovered one when there is a
-# tap to confine it to; the file is created and truncated below either way.
-if [[ -n "$TAP_REPO_PATH" && -d "$TAP_REPO_PATH" ]]; then
-  TAP_REPO_REAL="$(cd "$TAP_REPO_PATH" && pwd -P)"
-  FORMULA_PARENT="$(dirname "$TAP_FORMULA_PATH")"
-  mkdir -p "$FORMULA_PARENT"
-  FORMULA_PARENT_REAL="$(cd "$FORMULA_PARENT" && pwd -P)"
-  case "$FORMULA_PARENT_REAL/" in
-    "$TAP_REPO_REAL"/*) ;;
-    *)
-      echo "TAP_FORMULA_PATH resolves outside TAP_REPO_PATH:" >&2
-      echo "  formula: $FORMULA_PARENT_REAL" >&2
-      echo "  tap:     $TAP_REPO_REAL" >&2
-      exit 1
-      ;;
-  esac
-fi
-
-if [[ -z "$EXPLICIT_TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" && ! -d "$TAP_REPO_PATH" ]]; then
-  echo "TAP_REPO_PATH does not exist: $TAP_REPO_PATH" >&2
+# Confinement is required, not conditional: without a tap root to resolve against
+# there is nothing bounding where the write below lands.
+if [[ ! -d "$TAP_REPO_PATH" ]]; then
+  echo "TAP_REPO_PATH must be an existing tap checkout to write a formula into: $TAP_REPO_PATH" >&2
   exit 1
 fi
+TAP_REPO_REAL="$(cd "$TAP_REPO_PATH" && pwd -P)"
+FORMULA_PARENT="$(dirname "$TAP_FORMULA_PATH")"
+mkdir -p "$FORMULA_PARENT"
+FORMULA_PARENT_REAL="$(cd "$FORMULA_PARENT" && pwd -P)"
+case "$FORMULA_PARENT_REAL/" in
+  "$TAP_REPO_REAL"/*) ;;
+  *)
+    echo "TAP_FORMULA_PATH resolves outside TAP_REPO_PATH:" >&2
+    echo "  formula: $FORMULA_PARENT_REAL" >&2
+    echo "  tap:     $TAP_REPO_REAL" >&2
+    exit 1
+    ;;
+esac
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -216,7 +210,15 @@ for platform in "${PLATFORMS[@]}"; do
     # extraction applies entries in order, so a later symlink or directory with
     # the same name is what ends up installed.
     if ! awk -v want="./$member" '
-      $NF == want { seen++; if ($1 !~ /^-/) bad++ }
+      {
+        # For a symlink, tar prints "name -> target", so the last field is the
+        # target and a duplicate symlink shadowing a real file would go unseen.
+        entry = $0
+        arrow = index(entry, " -> ")
+        if (arrow > 0) entry = substr(entry, 1, arrow - 1)
+        fields = split(entry, parts, /[ \t]+/)
+        if (parts[fields] == want) { seen++; if ($1 !~ /^-/) bad++ }
+      }
       END { exit (seen > 0 && bad == 0) ? 0 : 1 }
     ' "$WORK_DIR/members.txt"; then
       echo "$platform release archive member is missing or not a regular file: $member" >&2
@@ -239,11 +241,17 @@ quoted_list() {
 }
 
 mkdir -p "$(dirname "$TAP_FORMULA_PATH")"
-cat > "$TAP_FORMULA_PATH" <<FORMULA
+# Written beside the target and renamed over it: `cat >` follows a symlink put
+# there after the checks above, while rename replaces the entry itself.
+FORMULA_STAGED="$(mktemp "$(dirname "$TAP_FORMULA_PATH")/.${FORMULA_NAME}.XXXXXX")"
+cat > "$FORMULA_STAGED" <<FORMULA
 class $FORMULA_CLASS < Formula
   desc "$FORMULA_DESC"
   homepage "https://github.com/$REPO_SLUG"
   license "$FORMULA_LICENSE"
+  # Pinned rather than guessed: Homebrew would otherwise read a version out of a
+  # platform-suffixed archive URL.
+  version "$VERSION"
 
   livecheck do
     url :stable
@@ -284,6 +292,8 @@ $(for binary in "${BINARIES[@]}"; do
   end
 end
 FORMULA
+chmod 644 "$FORMULA_STAGED"
+mv -f "$FORMULA_STAGED" "$TAP_FORMULA_PATH"
 
 echo "Generated tap formula: $TAP_FORMULA_PATH"
 echo "Release tag: $RELEASE_TAG"

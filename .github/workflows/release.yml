@@ -44,12 +44,16 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${INPUT_TAG_NAME}"
-            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
-            type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+            # One read of the ref, then one of the tag object: asking twice can
+            # pair a SHA from before a tag move with a type from after it.
+            ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+            sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
             # An annotated tag points at a tag object, not the commit it names.
             if [[ "${type}" == "tag" ]]; then
-              type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.type')"
-              sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+              tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+              sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+              type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
             fi
             if [[ "${type}" != "commit" ]]; then
               echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
@@ -194,8 +198,11 @@ jobs:
           BUILT_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
-          type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          # Single read of the ref, as in resolve: two requests can pair a SHA
+          # from one side of a tag move with a type from the other.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
           if [[ "${type}" == "tag" ]]; then
             sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
           fi
@@ -249,8 +256,11 @@ jobs:
           BUILT_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
-          type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          # Single read of the ref, as in resolve: two requests can pair a SHA
+          # from one side of a tag move with a type from the other.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
           if [[ "${type}" == "tag" ]]; then
             sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
           fi

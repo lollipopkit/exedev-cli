@@ -62,8 +62,15 @@ set_path_dep_version() {
 TARGETS=()
 APPLIED=0
 REFRESHED=0
+LOCKFILE=""
+LOCKFILE_CREATED=0
 cleanup_staged() {
   local target
+  # Nothing registered yet: `${TARGETS[@]}` on an empty array is an unbound
+  # variable under `set -u`, and an early failure would exit through this.
+  if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+    return
+  fi
   # An exit between applying the manifests and refreshing the lockfile — an error,
   # a Ctrl-C, or a terminated CI step — would otherwise leave the workspace on the
   # new version with a lockfile still on the old one, and drop the backups that
@@ -72,6 +79,9 @@ cleanup_staged() {
     for target in "${TARGETS[@]}"; do
       [[ -f "$target.bak" ]] && mv "$target.bak" "$target"
     done
+    if [[ "$LOCKFILE_CREATED" -eq 1 ]]; then
+      rm -f "$LOCKFILE"
+    fi
   fi
   for target in "${TARGETS[@]}"; do
     rm -f "$target.tmp" "$target.bak"
@@ -80,12 +90,26 @@ cleanup_staged() {
 trap cleanup_staged EXIT
 trap 'exit 1' INT TERM
 
+# The staging and backup names are derived from the target, so anything already
+# sitting at one of them would be written through (a symlink there redirects the
+# rewrite outside the workspace) and then deleted by the cleanup below.
+require_free_sibling() {
+  local sibling
+  for sibling in "$1.tmp" "$1.next" "$1.bak"; do
+    if [[ -e "$sibling" || -L "$sibling" ]]; then
+      echo "refusing to run: $sibling already exists; move it aside first" >&2
+      exit 1
+    fi
+  done
+}
+
 for member in "${MEMBERS[@]}"; do
   manifest="$REPO_ROOT/$member/Cargo.toml"
   if [[ ! -f "$manifest" ]]; then
     echo "workspace member has no manifest: $manifest" >&2
     exit 1
   fi
+  require_free_sibling "$manifest"
   TARGETS+=("$manifest")
   if ! set_package_version "$manifest" "$manifest.tmp"; then
     echo "no [package] version to replace in $manifest" >&2
@@ -98,6 +122,7 @@ if [[ ! -f "$ROOT_MANIFEST" ]]; then
   echo "workspace has no root manifest: $ROOT_MANIFEST" >&2
   exit 1
 fi
+require_free_sibling "$ROOT_MANIFEST"
 TARGETS+=("$ROOT_MANIFEST")
 cp "$ROOT_MANIFEST" "$ROOT_MANIFEST.tmp"
 for key in "${PATH_DEP_KEYS[@]}"; do
@@ -114,8 +139,14 @@ done
 # failure or interrupt there would otherwise leave a refreshed lockfile beside
 # restored manifests.
 LOCKFILE="$REPO_ROOT/Cargo.lock"
+LOCKFILE_CREATED=0
 if [[ -f "$LOCKFILE" ]]; then
+  require_free_sibling "$LOCKFILE"
   TARGETS+=("$LOCKFILE")
+else
+  # Nothing to restore it to: a workspace that had no lockfile must not keep the
+  # one `cargo update` writes if the run does not finish.
+  LOCKFILE_CREATED=1
 fi
 
 for target in "${TARGETS[@]}"; do
