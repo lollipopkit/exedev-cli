@@ -56,7 +56,7 @@ The HTTPS endpoint has no stdin or pty, so these commands always use local SSH e
 - `exedev-ctl new --prompt /dev/stdin`
 - `exedev-ctl new --setup-script /dev/stdin`
 
-For streamed scripts or interactive VM work, prefer direct VM SSH such as `ssh <vm>.exe.xyz ...` when the repo evidence shows it is the reliable path.
+For streamed scripts or interactive VM work, prefer direct VM SSH when the repo evidence shows it is the reliable path. Take the destination from `ssh_dest` in `exedev-ctl --json ls`, with any username it carries; `<vm>.exe.xyz` is only the usual form and fails on VMs routed as `vm+<name>@exe.dev`.
 
 ## More Detail
 

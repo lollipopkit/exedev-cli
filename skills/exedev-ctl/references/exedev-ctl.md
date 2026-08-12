@@ -340,4 +340,14 @@ When a VM task fails:
 4. If HTTP status is `403`, check token `cmds` permissions.
 5. If HTTP status is `422`, read the exe.dev command failure body.
 6. If interactive SSH or stdin is involved, use the SSH path.
-7. If SSH or script transport fails, prefer direct `ssh <vm>.exe.xyz ...` checks to separate VM reachability from exe.dev API permissions.
+7. If SSH or script transport fails, check the VM directly to separate VM
+   reachability from exe.dev API permissions. Use the destination exe.dev
+   reports, username included, rather than assembling a hostname:
+
+   ```sh
+   dest="$(exedev-ctl --json ls | jq -r '.vms[] | select(.vm_name=="p1-a-1") | .ssh_dest')"
+   ssh "$dest" uptime
+   ```
+
+   Building `<vm>.exe.xyz` instead fails on VMs whose route needs the
+   `vm+<name>@exe.dev` form, which looks like the VM being unreachable.
