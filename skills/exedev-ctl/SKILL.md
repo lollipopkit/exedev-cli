@@ -33,7 +33,8 @@ Check the current environment and scope before proposing changes:
 - Verify `EXE_DEV_API_KEY` is present for HTTPS `/exec` operations.
 - Use `exedev-ctl --json ls` to inspect current VMs.
 - Treat destructive VM actions as high risk. Require explicit confirmation before `rm`, bulk deletion, or operations that could lose disk state unless the user already asked for that exact action.
-- Treat access grants as high risk too. `share add <vm> <target> --root` and `share access allow <vm>` give SSH, Terminal, and Shelley access, not web-only access; `billing credits buy` spends money. The CLI prompts for these unless `--yes` is passed.
+- Know which commands prompt. The CLI asks for confirmation before deletions, access grants, credential creation, and spending; `references/exedev-ctl.md` lists them. `share add <vm> <target> --root` and `share access allow <vm>` give SSH, Terminal, and Shelley access rather than web-only, and `billing credits buy` spends money.
+- The prompt needs a terminal. In a non-interactive session a guarded command fails with `failed to read confirmation: IO error: not a terminal` before anything is sent to exe.dev. That is the guard, not a bug: confirm the exact action with the user, then rerun that one command with `--yes`. Do not add `--yes` pre-emptively to commands that do not need it.
 - When a token returns `403`, inspect token permissions before assuming a VM or CLI bug.
 - When `/exec` returns `422`, surface the exe.dev command failure body.
 

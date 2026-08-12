@@ -18,9 +18,9 @@ exedev-clis-<tag>-macos-arm64.tar.gz
 ```
 
 Each archive contains both the `exedev-ctl` and `exedev-k8s` binaries, plus
-`README.md`, `LICENSE`, `.env.example`, and `fleet.example.yaml`. Archive
-member names carry a `./` prefix, so extract with `./exedev-ctl`, not
-`exedev-ctl`.
+`README.md`, `README.zh-CN.md`, `LICENSE`, `.env.example`, and
+`fleet.example.yaml`. Archive member names carry a `./` prefix, so extract with
+`./exedev-ctl`, not `exedev-ctl`.
 
 Manual install pattern:
 
@@ -284,18 +284,46 @@ running as the same user. exe.dev offers no argument-free input path for these
 two commands, so treat the token as exposed locally and prefer short `--exp`
 values.
 
+## Commands That Ask For Confirmation
+
+These prompt before running, on either transport, and the prompt needs a
+terminal. In a non-interactive session they fail with
+`failed to read confirmation: IO error: not a terminal` before anything reaches
+exe.dev. Confirm the exact action with the user, then rerun that one command
+with `--yes`.
+
+| Category | Commands |
+|---|---|
+| Deletion | `rm`, `tag -d`, `domain rm`, `pool delete`, `ssh-key remove`, `integrations remove`, `share remove`, `share remove-link`, `team remove` |
+| Widening access | `share set-public`, `share add-link`, `share add <vm> <target> --root`, `share access allow`, `share receive-email`, `grant-support-root`, `team add`, `team settings auto-join on`, `team settings vm-sharing` |
+| Narrowing access | `share set-private`, `integrations detach` |
+| Credentials | `ssh-key add`, `ssh-key generate-api-key`, `integrations add`, `integrations attach`, `integrations setup`, `integrations edit`, `team auth set` |
+| Domains | `domain add` |
+| Spending | `billing capacity`, `billing credits buy`, `billing payment remove`, `billing payment default`, `pool new` |
+| Ownership | `team role`, `team transfer`, `team disable` |
+
+`integrations setup <type> --list` and `--verify` are exempt, since they only
+report what is connected. The `share add-share-link` and `share remove-share-link`
+aliases are treated the same as the names above. Everything not listed runs
+without a prompt.
+
+The list this table mirrors is `is_dangerous` in `core/src/shell.rs`; re-derive
+it from there if a release adds commands.
+
 ## Token Generation Helper
 
-The `exedev-ctl` wrapper supports exe.dev token generation with `--label`, `--vm`, `--cmds`, and `--exp`:
+The `exedev-ctl` wrapper supports exe.dev token generation with `--label`,
+`--vm`, `--cmds`, and `--exp`. Creating a credential prompts, so a
+non-interactive run needs `--yes` on that command:
 
 ```sh
-exedev-ctl ssh-key generate-api-key --label automation --cmds "ls,new,whoami,share show,share port,domain add,domain ls,domain rm" --exp 30d
+exedev-ctl --yes ssh-key generate-api-key --label automation --cmds "ls,new,whoami,share show,share port,domain add,domain ls,domain rm" --exp 30d
 ```
 
 For a VM-scoped token accepted by the VM HTTPS proxy (not `/exec`):
 
 ```sh
-exedev-ctl ssh-key generate-api-key --vm p1-a-1 --label deploy
+exedev-ctl --yes ssh-key generate-api-key --vm p1-a-1 --label deploy
 ```
 
 When `--cmds` is omitted, exe.dev grants the defaults: `help`, `ls`, `new`, `whoami`, `ssh-key list`, `share show`, `exe0-to-exe1`, `team`, and `team members`. Only command names are checked; flags like `--json` are always allowed. For destructive operations, include commands intentionally and narrowly, for example `rm`, `restart`, or `rename` only when needed.
@@ -306,7 +334,10 @@ When a VM task fails:
 
 1. Run `exedev-ctl whoami` or `exedev-ctl --json ls` to verify default SSH auth.
 2. For HTTPS-specific failures, retry with `exedev-ctl --transport http whoami` or `exedev-ctl --transport http --json ls`.
-3. If HTTP status is `403`, check token `cmds` permissions.
-4. If HTTP status is `422`, read the exe.dev command failure body.
-5. If interactive SSH or stdin is involved, use the SSH path.
-6. If SSH or script transport fails, prefer direct `ssh <vm>.exe.xyz ...` checks to separate VM reachability from exe.dev API permissions.
+3. If the error is `failed to read confirmation`, the command is one of the
+   guarded ones above and there is no terminal to answer on. Nothing was sent to
+   exe.dev. Confirm the action, then rerun it with `--yes`.
+4. If HTTP status is `403`, check token `cmds` permissions.
+5. If HTTP status is `422`, read the exe.dev command failure body.
+6. If interactive SSH or stdin is involved, use the SSH path.
+7. If SSH or script transport fails, prefer direct `ssh <vm>.exe.xyz ...` checks to separate VM reachability from exe.dev API permissions.
