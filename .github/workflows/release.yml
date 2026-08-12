@@ -44,9 +44,6 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${INPUT_TAG_NAME}"
-            # Rejected here rather than in each matrix build, where set-version
-            # would fail four times over after the checkouts and toolchain setup.
-            scripts/release/check-version.sh "${tag}"
             sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
             type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
             # An annotated tag points at a tag object, not the commit it names.
@@ -62,6 +59,11 @@ jobs:
             tag="${GITHUB_REF_NAME}"
             sha="${GITHUB_SHA}"
           fi
+          # Rejected here on either path rather than in each matrix build, where
+          # set-version would fail four times over after the checkouts and
+          # toolchain setup. The push trigger only filters `v*`, so a pushed
+          # `v1.2` reaches this point too.
+          scripts/release/check-version.sh "${tag}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 
@@ -173,21 +175,14 @@ jobs:
           path: dist/${{ steps.package.outputs.archive }}
           if-no-files-found: error
 
-  publish:
-    name: publish release
+  # Separate from publish so the write-capable token is not in scope while this
+  # runs: the job that holds contents: write grants it to every one of its steps.
+  verify:
+    name: verify release commit
     needs: [resolve, build]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
 
     steps:
-      - name: Download release archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: release-*
-          path: dist
-          merge-multiple: true
-
       # The archives were built from one commit; the release is about to be
       # attached to a tag name. If the tag moved in between, publishing would ship
       # binaries that do not match the source the tag now points at.
@@ -209,6 +204,21 @@ jobs:
             exit 1
           fi
 
+  publish:
+    name: publish release
+    needs: [resolve, verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
       - name: Publish GitHub release
         # Pinned to a commit, not the mutable v3 tag: this is the only step that
         # runs with contents: write, so retagging upstream would hand a new
@@ -219,3 +229,24 @@ jobs:
           tag_name: ${{ needs.resolve.outputs.tag }}
           files: dist/*.tar.gz
           generate_release_notes: true
+
+      # The release API attaches to a tag name, so a tag moved during the step
+      # above cannot be refused at that instant. Failing here turns what would be
+      # a silent mismatch between the release and its source into a red run.
+      - name: Confirm the published tag is still the built commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          BUILT_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          if [[ "${type}" == "tag" ]]; then
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+          fi
+          if [[ "${sha}" != "${BUILT_SHA}" ]]; then
+            echo "tag ${RELEASE_TAG} moved to ${sha} while publishing; the release does not match ${BUILT_SHA}" >&2
+            exit 1
+          fi

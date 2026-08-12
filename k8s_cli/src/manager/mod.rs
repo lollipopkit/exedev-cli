@@ -399,12 +399,11 @@ async fn bootstrap_k3s(
         ClusterMode::Existing => {
             let k3s_url = require_env(K3S_URL_ENV)?;
             let token = require_env(K3S_TOKEN_ENV)?;
-            if kubeconfig_arg.is_none() && env::var_os("KUBECONFIG").is_none() {
-                println!(
-                    "{} no --kubeconfig or KUBECONFIG set; kubectl will use its default config",
-                    output::warn("warning:")
-                );
-            }
+            // Workers are joined to K3S_URL, while the labels, taints, and
+            // manifests that follow go wherever kubectl points. Without this they
+            // could be applied to an unrelated cluster, so the two are required to
+            // be the same cluster before anything is changed.
+            ensure_kubectl_targets_cluster(kubeconfig_arg, &k3s_url).await?;
             for node in plan
                 .nodes
                 .iter()
@@ -417,6 +416,54 @@ async fn bootstrap_k3s(
             Ok(None)
         }
     }
+}
+
+/// Confirms the kubectl context serves the cluster the workers are joining.
+async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str) -> Result<()> {
+    let server = kubectl_capture(
+        kubeconfig,
+        &[
+            "config",
+            "view",
+            "--minify",
+            "-o",
+            "jsonpath={.clusters[0].cluster.server}",
+        ],
+    )
+    .await
+    .context("failed to read the kubectl context; pass --kubeconfig or set KUBECONFIG")?;
+    let server = server.trim();
+    if server.is_empty() {
+        bail!(
+            "kubectl has no cluster server configured; pass --kubeconfig or set KUBECONFIG so {K3S_URL_ENV} and kubectl agree"
+        );
+    }
+    if !same_cluster_endpoint(server, k3s_url) {
+        bail!(
+            "kubectl points at {server} but {K3S_URL_ENV} is {k3s_url}; pass --kubeconfig for that cluster rather than labelling and deploying to another one"
+        );
+    }
+    Ok(())
+}
+
+/// Compares two endpoints by host and port, so an explicit `:6443` and the same
+/// URL without it are still the same cluster.
+fn same_cluster_endpoint(left: &str, right: &str) -> bool {
+    fn parts(url: &str) -> (String, String) {
+        let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let authority = without_scheme
+            .split('/')
+            .next()
+            .unwrap_or(without_scheme)
+            .trim_end_matches('.');
+        match authority.rsplit_once(':') {
+            Some((host, port)) if port.chars().all(|ch| ch.is_ascii_digit()) => {
+                (host.to_ascii_lowercase(), port.to_string())
+            }
+            _ => (authority.to_ascii_lowercase(), "6443".to_string()),
+        }
+    }
+    parts(left) == parts(right)
 }
 
 async fn install_tailscale(targets: &SshTargets, vm: &str, authkey: &str) -> Result<()> {

@@ -190,7 +190,7 @@ install_k3s_binary() {
 
 pub(super) fn tailscale_install_command(authkey: &str) -> String {
     format!(
-        "if ! command -v tailscale >/dev/null 2>&1; then curl -fsSL https://tailscale.com/install.sh | ${{SUDO}} sh; fi;\n{START_TAILSCALED_SCRIPT}\ntailscale_up_output=\"$(${{SUDO}} tailscale up --auth-key {} --ssh --accept-routes 2>&1)\"\ntailscale_up_status=$?\nif [ -n \"$tailscale_up_output\" ]; then\n  printf '%s\\n' \"$tailscale_up_output\" >&2\nfi\nif [ \"$tailscale_up_status\" -ne 0 ]; then\n  exit \"$tailscale_up_status\"\nfi\n{CHECK_TAILNET_LOCK_SCRIPT}",
+        "if ! command -v tailscale >/dev/null 2>&1; then curl -fsSL https://tailscale.com/install.sh | ${{SUDO}} sh; fi;\n{START_TAILSCALED_SCRIPT}\ntailscale_up_output=\"$(${{SUDO}} tailscale up --auth-key {} --ssh --accept-routes 2>&1)\"\ntailscale_up_status=$?\nif [ -n \"$tailscale_up_output\" ]; then\n  printf '%s\\n' \"$tailscale_up_output\" >&2\nfi\n{CHECK_TAILNET_LOCK_SCRIPT}\nif [ \"$tailscale_up_status\" -ne 0 ]; then\n  exit \"$tailscale_up_status\"\nfi",
         shell_single_quote(authkey)
     )
 }

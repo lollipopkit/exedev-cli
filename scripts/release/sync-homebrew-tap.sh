@@ -74,6 +74,18 @@ if [[ ! "$FORMULA_CLASS" =~ ^[A-Z][0-9A-Za-z_]*$ ]]; then
   exit 1
 fi
 
+# Homebrew derives the class from the file name, so a class naming a different
+# formula produces a file it will not load under the name it was written as.
+EXPECTED_CLASS="$(printf '%s' "$FORMULA_NAME" | awk -F'[-_]' '{
+  out = ""
+  for (i = 1; i <= NF; i++) out = out toupper(substr($i, 1, 1)) substr($i, 2)
+  print out
+}')"
+if [[ "$FORMULA_CLASS" != "$EXPECTED_CLASS" ]]; then
+  echo "FORMULA_CLASS $FORMULA_CLASS does not match FORMULA_NAME $FORMULA_NAME (expected $EXPECTED_CLASS)" >&2
+  exit 1
+fi
+
 for field in FORMULA_DESC FORMULA_LICENSE; do
   value="${!field}"
   if [[ -z "$value" || "$value" == *\"* || "$value" == *\\* || "$value" == *"#"* || "$value" == *$'\n'* ]]; then
@@ -103,7 +115,9 @@ if [[ -z "$TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" ]]; then
     TAP_FORMULA_PATH="$FORMULA_SHARD_PATH"
   elif [[ -f "$FORMULA_FLAT_PATH" ]]; then
     TAP_FORMULA_PATH="$FORMULA_FLAT_PATH"
-  elif [[ -d "$TAP_REPO_PATH/Formula/${FORMULA_NAME:0:1}" ]]; then
+  elif compgen -G "$TAP_REPO_PATH/Formula/${FORMULA_NAME:0:1}/*.rb" > /dev/null; then
+    # The directory alone proves nothing; a flat tap can hold an unrelated one.
+    # Formulae inside it are what makes the tap sharded.
     TAP_FORMULA_PATH="$FORMULA_SHARD_PATH"
   else
     TAP_FORMULA_PATH="$FORMULA_FLAT_PATH"
@@ -128,6 +142,29 @@ case "$TAP_FORMULA_PATH" in
     exit 1
     ;;
 esac
+
+if [[ -L "$TAP_FORMULA_PATH" ]]; then
+  echo "TAP_FORMULA_PATH is a symlink; refusing to write through it: $TAP_FORMULA_PATH" >&2
+  exit 1
+fi
+
+# An explicit path gets the same confinement as a discovered one when there is a
+# tap to confine it to; the file is created and truncated below either way.
+if [[ -n "$TAP_REPO_PATH" && -d "$TAP_REPO_PATH" ]]; then
+  TAP_REPO_REAL="$(cd "$TAP_REPO_PATH" && pwd -P)"
+  FORMULA_PARENT="$(dirname "$TAP_FORMULA_PATH")"
+  mkdir -p "$FORMULA_PARENT"
+  FORMULA_PARENT_REAL="$(cd "$FORMULA_PARENT" && pwd -P)"
+  case "$FORMULA_PARENT_REAL/" in
+    "$TAP_REPO_REAL"/*) ;;
+    *)
+      echo "TAP_FORMULA_PATH resolves outside TAP_REPO_PATH:" >&2
+      echo "  formula: $FORMULA_PARENT_REAL" >&2
+      echo "  tap:     $TAP_REPO_REAL" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ -z "$EXPLICIT_TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" && ! -d "$TAP_REPO_PATH" ]]; then
   echo "TAP_REPO_PATH does not exist: $TAP_REPO_PATH" >&2
@@ -170,10 +207,14 @@ sha_for() {
 # on the platform it belongs to, so a malformed Linux archive is invisible in the
 # macOS one.
 for platform in "${PLATFORMS[@]}"; do
-  tar -tzf "$WORK_DIR/${ARCHIVE_PREFIX}-${RELEASE_TAG}-${platform}.tar.gz" > "$WORK_DIR/members.txt"
+  # Verbose listing: the formula installs these paths as files, so a directory or
+  # a symlink carrying the expected name would satisfy a name-only check and then
+  # install the wrong thing.
+  tar -tvzf "$WORK_DIR/${ARCHIVE_PREFIX}-${RELEASE_TAG}-${platform}.tar.gz" > "$WORK_DIR/members.txt"
   for member in "${BINARIES[@]}" "${DOCS[@]}"; do
-    if ! grep -qx "\./$member" "$WORK_DIR/members.txt"; then
-      echo "$platform release archive does not contain expected member: $member" >&2
+    if ! awk -v want="./$member" '$1 ~ /^-/ && $NF == want { found = 1 } END { exit found ? 0 : 1 }' \
+      "$WORK_DIR/members.txt"; then
+      echo "$platform release archive has no regular file member: $member" >&2
       exit 1
     fi
   done

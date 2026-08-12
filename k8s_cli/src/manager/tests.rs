@@ -188,8 +188,15 @@ fn parses_ssh_destinations_from_ls_json() {
             {"vm_name":"routable","ssh_dest":"routable.exe.xyz","ssh_host":"routable.exe.xyz"},
             {"vm_name":"prefixed","ssh_dest":"vm+prefixed@exe.dev","ssh_host":"exe.dev","ssh_user":"vm+prefixed"},
             {"vm_name":"host-only","ssh_host":"shard3.exe.dev","ssh_user":"vm+host-only"},
+            {"vm_name":"conflicting","ssh_dest":"vm+conflicting@exe.dev","ssh_host":"wrong.exe.xyz","ssh_user":"wrong"},
             {"vm_name":"unknown"}
         ]}"#,
+    );
+    // ssh_dest is authoritative: preferring the host/user pair here would dial a
+    // different route than exe.dev reported.
+    assert_eq!(
+        destinations.get("conflicting").unwrap(),
+        "vm+conflicting@exe.dev"
     );
     assert_eq!(destinations.get("routable").unwrap(), "routable.exe.xyz");
     assert_eq!(destinations.get("prefixed").unwrap(), "vm+prefixed@exe.dev");
@@ -472,4 +479,81 @@ fn staging_names_do_not_repeat() {
         .count();
     assert_eq!(leftovers, 0);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn error_and_status_text_is_not_taken_for_inventory() {
+    assert!(
+        parse_vm_names(r#"{"output":"Error: quota exceeded\n"}"#)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(parse_vm_names("VM vm-1 is unavailable").unwrap().is_empty());
+    let names = parse_vm_names_from_text("NAME STATUS\nvm-1 running\nnameserver stopped\n");
+    assert_eq!(names.len(), 2);
+    assert!(names.contains("vm-1"));
+    assert!(names.contains("nameserver"));
+}
+
+#[test]
+fn distinct_cluster_names_get_distinct_state_directories() {
+    let slash = generated_token_path("a/b");
+    let underscore = generated_token_path("a_b");
+    assert_ne!(slash, underscore);
+    assert!(slash.starts_with(".exedev-k8s"));
+    // A name that needs no sanitizing keeps its own readable directory.
+    assert_eq!(
+        generated_token_path("a_b"),
+        Path::new(".exedev-k8s/a_b/k3s-token")
+    );
+    // Same input, same directory, run after run.
+    assert_eq!(generated_token_path("a/b"), generated_token_path("a/b"));
+}
+
+#[test]
+fn cluster_endpoints_compare_by_host_and_port() {
+    assert!(same_cluster_endpoint(
+        "https://100.64.0.1:6443",
+        "https://100.64.0.1:6443"
+    ));
+    assert!(same_cluster_endpoint(
+        "https://k3s.example",
+        "k3s.example:6443"
+    ));
+    assert!(!same_cluster_endpoint(
+        "https://100.64.0.1:6443",
+        "https://100.64.0.2:6443"
+    ));
+    assert!(!same_cluster_endpoint(
+        "https://100.64.0.1:6443",
+        "https://100.64.0.1:7443"
+    ));
+}
+
+/// `read_or_create_k3s_token` resolves its path relative to the working
+/// directory and consults the environment, both of which are process-wide.
+static STATE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn an_empty_token_file_is_refused() {
+    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let previous_dir = std::env::current_dir().unwrap();
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-emptytok-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_current_dir(&dir).unwrap();
+    unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+
+    write_secret_file(&generated_token_path("c1"), "   \n").unwrap();
+    let result = read_or_create_k3s_token("c1");
+
+    // A fresh cluster still generates one; only an empty file is refused.
+    let generated = read_or_create_k3s_token("c2");
+
+    std::env::set_current_dir(&previous_dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("is empty"), "unexpected error: {err}");
+    assert!(!generated.unwrap().is_empty());
 }

@@ -28,6 +28,16 @@ pub(super) fn generated_token_path(cluster_name: &str) -> PathBuf {
 /// `../../elsewhere` would otherwise place the token and kubeconfig outside
 /// `.exedev-k8s`. Anything that is not a plain name component is replaced.
 fn state_dir_name(cluster_name: &str) -> String {
+    let safe = !cluster_name.is_empty()
+        && cluster_name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    if safe {
+        return cluster_name.to_string();
+    }
+    // Two names that sanitize alike — `a/b` and `a_b` — would otherwise share one
+    // directory and overwrite each other's token. The digest of the original name
+    // keeps them apart while the sanitized part keeps the directory recognizable.
     let sanitized = cluster_name
         .chars()
         .map(|ch| {
@@ -38,11 +48,18 @@ fn state_dir_name(cluster_name: &str) -> String {
             }
         })
         .collect::<String>();
-    if sanitized.trim_matches('_').is_empty() {
-        "cluster".to_string()
-    } else {
-        sanitized
+    format!("{sanitized}-{:016x}", fnv1a(cluster_name.as_bytes()))
+}
+
+/// FNV-1a, spelled out so the directory a cluster uses never changes with the
+/// toolchain the way `DefaultHasher` would.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
+    hash
 }
 
 pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
@@ -66,6 +83,14 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
     }
     if path.exists() {
         let token = read_regular_file(&path).map(|text| text.trim().to_string())?;
+        // An empty file is not a token. Returning it would hand the server and
+        // every agent a blank credential, the same way an empty K3S_TOKEN would.
+        if token.is_empty() {
+            bail!(
+                "{} is empty; delete it to generate a new cluster token",
+                path.display()
+            );
+        }
         // A token left readable by others (an older run, a restored backup) stays
         // that way for every future run unless it is tightened when reused.
         restrict_secret_permissions(&path)?;

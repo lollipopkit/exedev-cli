@@ -18,6 +18,10 @@ fi
 
 VERSION="${VERSION#v}"
 
+# Character ranges in the pattern below are ASCII; a locale with different
+# collation would otherwise decide what [0-9A-Za-z] covers.
+LC_ALL=C
+
 SEMVER_NUM='(0|[1-9][0-9]*)'
 SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"

@@ -155,8 +155,25 @@ pub(super) fn parse_vm_names_from_text(text: &str) -> BTreeSet<String> {
         // `nameserver`, and bootstrap would then try to create it again.
         .enumerate()
         .filter(|(index, name)| *index > 0 || !name.eq_ignore_ascii_case("name"))
-        .map(|(_, name)| name.to_string())
+        .map(|(_, name)| name)
+        .filter(|name| is_vm_name(name))
+        .map(str::to_string)
         .collect()
+}
+
+/// Whether a word from rendered output can be a VM name at all.
+///
+/// Not every non-JSON body is a table: `Error: quota exceeded` and
+/// `VM vm-1 is unavailable` would otherwise contribute `Error:` and `VM` as VMs,
+/// and a planned VM reported that way would look like it already exists. exe.dev
+/// names are DNS labels, so anything else is prose rather than a row.
+fn is_vm_name(word: &str) -> bool {
+    !word.is_empty()
+        && word.len() <= 63
+        && word.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && word
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 pub(super) fn parse_kubernetes_nodes(response: &str) -> Result<BTreeMap<String, KubernetesNode>> {
