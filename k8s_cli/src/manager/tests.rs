@@ -513,21 +513,22 @@ fn distinct_cluster_names_get_distinct_state_directories() {
     assert_eq!(generated_token_path("a/b"), generated_token_path("a/b"));
 }
 
+fn is_same_cluster(left: &str, right: &str) -> bool {
+    same_cluster_endpoint(left, right).is_some()
+}
+
 #[test]
 fn cluster_endpoints_compare_by_host_and_port() {
-    assert!(same_cluster_endpoint(
+    assert!(is_same_cluster(
         "https://100.64.0.1:6443",
         "https://100.64.0.1:6443"
     ));
-    assert!(same_cluster_endpoint(
-        "https://k3s.example",
-        "k3s.example:6443"
-    ));
-    assert!(!same_cluster_endpoint(
+    assert!(is_same_cluster("https://k3s.example", "k3s.example:6443"));
+    assert!(!is_same_cluster(
         "https://100.64.0.1:6443",
         "https://100.64.0.2:6443"
     ));
-    assert!(!same_cluster_endpoint(
+    assert!(!is_same_cluster(
         "https://100.64.0.1:6443",
         "https://100.64.0.1:7443"
     ));
@@ -563,12 +564,12 @@ fn an_empty_token_file_is_refused() {
 
 #[test]
 fn trailing_dot_hosts_compare_equal_with_an_explicit_port() {
-    assert!(same_cluster_endpoint(
+    assert!(is_same_cluster(
         "https://k3s.example.:6443",
         "https://k3s.example:6443"
     ));
-    assert!(same_cluster_endpoint("https://k3s.example.", "k3s.example"));
-    assert!(!same_cluster_endpoint(
+    assert!(is_same_cluster("https://k3s.example.", "k3s.example"));
+    assert!(!is_same_cluster(
         "https://k3s.example.:6443",
         "https://other.example:6443"
     ));
@@ -648,4 +649,75 @@ fn bare_json_strings_must_look_like_vm_names() {
     let names = parse_vm_names(r#"["vm-1","vm-2"]"#).unwrap();
     assert_eq!(names.len(), 2);
     assert!(names.contains("vm-1"));
+}
+
+#[test]
+fn cluster_endpoints_require_a_matching_scheme() {
+    // http:// is not the HTTPS API endpoint the kubeconfig names.
+    assert!(!is_same_cluster(
+        "https://cluster.example:6443",
+        "http://cluster.example:6443"
+    ));
+    assert!(!is_same_cluster(
+        "ssh://cluster.example:6443",
+        "https://cluster.example:6443"
+    ));
+    // More than one trailing dot is not a hostname.
+    assert!(!is_same_cluster(
+        "https://k3s.example...:6443",
+        "https://k3s.example:6443"
+    ));
+}
+
+#[test]
+fn nested_listings_survive_an_object_that_also_names_a_vm() {
+    let response = r#"{"vm_name":"outer","ssh_dest":"vm+outer@exe.dev",
+        "vms":[{"vm_name":"inner","ssh_dest":"vm+inner@exe.dev"}]}"#;
+    let names = parse_vm_names(response).unwrap();
+    assert!(
+        names.contains("outer") && names.contains("inner"),
+        "{names:?}"
+    );
+    let destinations = parse_ssh_destinations(response);
+    assert_eq!(destinations.get("outer").unwrap(), "vm+outer@exe.dev");
+    assert_eq!(destinations.get("inner").unwrap(), "vm+inner@exe.dev");
+}
+
+#[test]
+fn stale_owned_labels_are_scheduled_for_removal() {
+    let nodes = parse_kubernetes_nodes(
+        r#"{"items":[{"metadata":{"name":"vm-1","labels":{
+            "exedev.dev/pool":"blue","exedev.dev/task":"old",
+            "kubernetes.io/hostname":"vm-1"}},"spec":{}}]}"#,
+    )
+    .unwrap();
+    let mut desired = BTreeMap::new();
+    desired.insert("exedev.dev/pool".to_string(), "blue".to_string());
+
+    // Only our own dropped label is retired; the node's own label is untouched.
+    assert_eq!(
+        stale_owned_labels(&nodes, "vm-1", &desired),
+        vec!["exedev.dev/task-".to_string()]
+    );
+}
+
+#[test]
+fn a_losing_concurrent_token_creation_adopts_the_winner() {
+    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let previous_dir = std::env::current_dir().unwrap();
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-tokrace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_current_dir(&dir).unwrap();
+    unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+
+    let first = read_or_create_k3s_token("c1");
+    // A second run of the same cluster must not mint a competing credential.
+    let second = read_or_create_k3s_token("c1");
+
+    std::env::set_current_dir(&previous_dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (first, second) = (first.unwrap(), second.unwrap());
+    assert!(!first.is_empty());
+    assert_eq!(first, second);
 }

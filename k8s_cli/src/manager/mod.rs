@@ -75,8 +75,11 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     ensure_tool("kubectl").await?;
     let ts_authkey = require_env(TS_AUTHKEY_ENV)?;
     if cmd.mode == ClusterMode::Existing {
-        require_env(K3S_URL_ENV)?;
+        let k3s_url = require_env(K3S_URL_ENV)?;
         require_env(K3S_TOKEN_ENV)?;
+        // Before anything is created: a target that does not match leaves the
+        // fleet's VMs behind when the bootstrap aborts further down.
+        ensure_kubectl_targets_cluster(cmd.kubeconfig.as_deref(), &k3s_url).await?;
     }
     let include_control_plane = cmd.mode == ClusterMode::New;
     let inventory = fetch_inventory(endpoint).await?;
@@ -289,7 +292,14 @@ async fn print_kubernetes_status(plan: &FleetPlan, kubeconfig: Option<&Path>) ->
             let labels_ok = expected
                 .labels
                 .iter()
-                .all(|(key, value)| actual.labels.get(key) == Some(value));
+                .all(|(key, value)| actual.labels.get(key) == Some(value))
+                // An owned label the plan dropped is drift too, so matching the
+                // desired ones is not on its own enough to report ok.
+                && actual
+                    .labels
+                    .keys()
+                    .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                    .all(|key| expected.labels.contains_key(key));
             // A node the plan no longer isolates still counts as drift while it
             // carries one of this tool's taints, so `None` cannot simply be `ok`.
             let owned_taints = actual
@@ -410,11 +420,7 @@ async fn bootstrap_k3s(
         ClusterMode::Existing => {
             let k3s_url = require_env(K3S_URL_ENV)?;
             let token = require_env(K3S_TOKEN_ENV)?;
-            // Workers are joined to K3S_URL, while the labels, taints, and
-            // manifests that follow go wherever kubectl points. Without this they
-            // could be applied to an unrelated cluster, so the two are required to
-            // be the same cluster before anything is changed.
-            ensure_kubectl_targets_cluster(kubeconfig_arg, &k3s_url).await?;
+            // Already checked in run_bootstrap, before any VM was created.
             for node in plan
                 .nodes
                 .iter()
@@ -449,7 +455,7 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
             "kubectl has no cluster server configured; pass --kubeconfig or set KUBECONFIG so {K3S_URL_ENV} and kubectl agree"
         );
     }
-    if !same_cluster_endpoint(server, k3s_url) {
+    if same_cluster_endpoint(server, k3s_url).is_none() {
         bail!(
             "kubectl points at {server} but {K3S_URL_ENV} is {k3s_url}; pass --kubeconfig for that cluster rather than labelling and deploying to another one"
         );
@@ -457,12 +463,20 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
     Ok(())
 }
 
-/// Compares two endpoints by host and port, so an explicit `:6443` and the same
+/// Compares two Kubernetes API endpoints, so an explicit `:6443` and the same
 /// URL without it are still the same cluster.
-fn same_cluster_endpoint(left: &str, right: &str) -> bool {
-    fn parts(url: &str) -> (String, String) {
-        let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-        let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+///
+/// The scheme is part of the identity: `http://host:6443` is not the HTTPS API
+/// endpoint that `https://host:6443` names, and treating them as equal would let
+/// a mistyped K3S_URL through the only check made before workers are joined.
+fn same_cluster_endpoint(left: &str, right: &str) -> Option<(String, String, String)> {
+    fn parts(url: &str) -> Option<(String, String, String)> {
+        let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
+        let scheme = scheme.to_ascii_lowercase();
+        if scheme != "https" {
+            return None;
+        }
+        let authority = rest.split('/').next().unwrap_or(rest);
         let (host, port) = match authority.rsplit_once(':') {
             Some((host, port))
                 if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) =>
@@ -471,14 +485,16 @@ fn same_cluster_endpoint(left: &str, right: &str) -> bool {
             }
             _ => (authority, "6443"),
         };
-        // The root label is trimmed after the port is split off, so `host.:6443`
-        // and `host:6443` are the same authority.
-        (
-            host.trim_end_matches('.').to_ascii_lowercase(),
-            port.to_string(),
-        )
+        // One trailing dot is the DNS root label and is dropped after the port is
+        // split off; more than one is not a hostname at all.
+        let host = host.strip_suffix('.').unwrap_or(host);
+        if host.is_empty() || host.ends_with('.') {
+            return None;
+        }
+        Some((scheme, host.to_ascii_lowercase(), port.to_string()))
     }
-    parts(left) == parts(right)
+    let left = parts(left)?;
+    parts(right).filter(|right| *right == left)
 }
 
 async fn install_tailscale(targets: &SshTargets, vm: &str, authkey: &str) -> Result<()> {
@@ -716,10 +732,13 @@ async fn apply_node_metadata(
     include_control_plane: bool,
     kubeconfig: Option<&Path>,
 ) -> Result<()> {
+    // Not defaulted to empty: without the current nodes the stale labels and
+    // taints below cannot be found, and reporting success would claim a
+    // reconciliation that did not happen.
     let actual = kubectl_capture(kubeconfig, &["get", "nodes", "-o", "json"])
         .await
         .and_then(|output| parse_kubernetes_nodes(&output))
-        .unwrap_or_default();
+        .context("failed to read current node labels and taints")?;
     for node in plan.bootstrap_nodes(include_control_plane) {
         let mut label_args = vec!["label".into(), "node".into(), node.name.clone()];
         label_args.extend(
@@ -727,6 +746,10 @@ async fn apply_node_metadata(
                 .iter()
                 .map(|(key, value)| format!("{key}={value}")),
         );
+        // Removing a label the plan dropped uses the same `key-` form as taints;
+        // sending only the current key=value pairs would leave the old ones on
+        // the node while status reported the desired ones as present.
+        label_args.extend(stale_owned_labels(&actual, &node.name, &node.labels));
         label_args.push("--overwrite".into());
         kubectl_run_owned(kubeconfig, label_args).await?;
 
@@ -757,6 +780,25 @@ async fn apply_node_metadata(
         }
     }
     Ok(())
+}
+
+/// Label removal arguments (`key-`) for this tool's labels that the plan dropped.
+fn stale_owned_labels(
+    nodes: &BTreeMap<String, KubernetesNode>,
+    name: &str,
+    desired: &BTreeMap<String, String>,
+) -> Vec<String> {
+    nodes
+        .get(name)
+        .map(|node| {
+            node.labels
+                .keys()
+                .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                .filter(|key| !desired.contains_key(*key))
+                .map(|key| format!("{key}-"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Taint removal arguments (`key-`) for this tool's taints that the plan dropped.

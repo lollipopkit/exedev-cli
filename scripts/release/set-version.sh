@@ -84,7 +84,7 @@ cleanup_staged() {
     fi
   fi
   for target in "${TARGETS[@]}"; do
-    rm -f "$target.tmp" "$target.bak"
+    rm -f "$target.tmp" "$target.next" "$target.bak"
   done
 }
 trap cleanup_staged EXIT
@@ -104,9 +104,17 @@ require_free_sibling() {
 }
 
 for member in "${MEMBERS[@]}"; do
-  manifest="$REPO_ROOT/$member/Cargo.toml"
-  if [[ ! -f "$manifest" ]]; then
-    echo "workspace member has no manifest: $manifest" >&2
+  member_dir="$REPO_ROOT/$member"
+  # A symlinked member directory puts the rewrite, its staging file and its
+  # backup wherever the link points, which the sibling checks below cannot see
+  # because every one of those paths is inside it.
+  if [[ -L "$member_dir" || ! -d "$member_dir" ]]; then
+    echo "workspace member is not a real directory: $member_dir" >&2
+    exit 1
+  fi
+  manifest="$member_dir/Cargo.toml"
+  if [[ -L "$manifest" || ! -f "$manifest" ]]; then
+    echo "workspace member has no regular manifest: $manifest" >&2
     exit 1
   fi
   require_free_sibling "$manifest"
@@ -118,8 +126,8 @@ for member in "${MEMBERS[@]}"; do
 done
 
 ROOT_MANIFEST="$REPO_ROOT/Cargo.toml"
-if [[ ! -f "$ROOT_MANIFEST" ]]; then
-  echo "workspace has no root manifest: $ROOT_MANIFEST" >&2
+if [[ -L "$ROOT_MANIFEST" || ! -f "$ROOT_MANIFEST" ]]; then
+  echo "workspace has no regular root manifest: $ROOT_MANIFEST" >&2
   exit 1
 fi
 require_free_sibling "$ROOT_MANIFEST"

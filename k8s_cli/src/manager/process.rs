@@ -304,7 +304,10 @@ pub(super) async fn capture_remote_ssh_output(
         // Seeing it means ssh failed while returning output, not before running
         // anything, so resending the script would repeat an install or a service
         // change that already happened.
-        let remote_ran = String::from_utf8_lossy(&output.stdout).contains(REMOTE_EXIT_PREFIX);
+        // Any stdout at all means the remote shell reached the script, whether or
+        // not the exit marker made it back, so resending would repeat whatever it
+        // had already done. Only an exchange that produced nothing is retried.
+        let remote_ran = !output.stdout.is_empty();
         if output.status.code() == Some(255) && !remote_ran && attempt < REMOTE_SSH_ATTEMPTS {
             eprintln!(
                 "{}",

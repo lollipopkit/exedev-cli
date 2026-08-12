@@ -290,6 +290,7 @@ pub(crate) struct ShareRemoveLinkCmd {
 pub(crate) struct ShareReceiveEmailCmd {
     pub(crate) vm: String,
     /// One of on, off.
+    #[arg(value_parser = ["on", "off"])]
     pub(crate) state: Option<String>,
     /// Restrict who the VM may email: all, known, owner, none.
     #[arg(long)]

@@ -59,9 +59,11 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
             for key in VM_NAME_KEYS {
                 if let Some(name) = object.get(key).and_then(Value::as_str) {
                     names.insert(name.to_string());
-                    return;
+                    break;
                 }
             }
+            // Naming a VM does not rule out carrying more of them: returning here
+            // dropped every entry nested under an object that had both.
             for key in ["vms", "items", "data"] {
                 if let Some(child) = object.get(key) {
                     collect_vm_names_from_json(child, names);
@@ -107,11 +109,10 @@ fn collect_ssh_destinations(value: &Value, destinations: &mut BTreeMap<String, S
             let name = VM_NAME_KEYS
                 .iter()
                 .find_map(|key| object.get(*key).and_then(Value::as_str));
-            if let Some(name) = name {
-                if let Some(destination) = ssh_destination_from_object(object) {
-                    destinations.insert(name.to_string(), destination);
-                }
-                return;
+            if let Some(name) = name
+                && let Some(destination) = ssh_destination_from_object(object)
+            {
+                destinations.insert(name.to_string(), destination);
             }
             for key in ["vms", "items", "data"] {
                 if let Some(child) = object.get(key) {

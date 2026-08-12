@@ -49,12 +49,15 @@ jobs:
             ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
             sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
             type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
-            # An annotated tag points at a tag object, not the commit it names.
-            if [[ "${type}" == "tag" ]]; then
+            # An annotated tag points at a tag object, not the commit it names,
+            # and a tag object can name another one. Bounded so a cycle cannot
+            # spin here.
+            for _ in 1 2 3 4 5; do
+              [[ "${type}" == "tag" ]] || break
               tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
               sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
               type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
-            fi
+            done
             if [[ "${type}" != "commit" ]]; then
               echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
               exit 1
@@ -203,9 +206,13 @@ jobs:
           ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
           sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
           type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
-          if [[ "${type}" == "tag" ]]; then
-            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
-          fi
+          # Peeled the same way as resolve, including a tag naming another tag.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
           if [[ "${sha}" != "${BUILT_SHA}" ]]; then
             echo "tag ${RELEASE_TAG} now points at ${sha}, but these archives were built from ${BUILT_SHA}" >&2
             exit 1
@@ -261,9 +268,13 @@ jobs:
           ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
           sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
           type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
-          if [[ "${type}" == "tag" ]]; then
-            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
-          fi
+          # Peeled the same way as resolve, including a tag naming another tag.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
           if [[ "${sha}" != "${BUILT_SHA}" ]]; then
             echo "tag ${RELEASE_TAG} moved to ${sha} while publishing; the release does not match ${BUILT_SHA}" >&2
             exit 1

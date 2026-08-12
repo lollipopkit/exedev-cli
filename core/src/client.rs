@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
 use thiserror::Error;
 
@@ -38,6 +38,15 @@ impl ExeDevClient {
     }
 
     pub async fn exec(&self, command: &str) -> Result<String> {
+        // Every request carries the API key as a bearer token, so the endpoint has
+        // to be HTTPS: `--endpoint http://elsewhere/collect` would otherwise send
+        // the key and the command in the clear to whatever the caller named.
+        if !self.endpoint.to_ascii_lowercase().starts_with("https://") {
+            bail!(
+                "endpoint must be an https:// URL to carry the API key, got {}",
+                self.endpoint
+            );
+        }
         let response = self
             .http
             .post(&self.endpoint)

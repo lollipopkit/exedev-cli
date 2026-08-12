@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use rand::{RngExt, distr::Alphanumeric};
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -93,9 +93,34 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
         }
         return Ok(token);
     }
+    create_k3s_token(&path)
+}
+
+/// Generates the cluster token, or adopts the one another run created first.
+///
+/// Writing it outright would let two bootstraps of the same cluster each
+/// generate a token, clobber the other, and hand the server and the agents
+/// different credentials. The staged file is linked into place instead, which
+/// fails rather than replaces when the name is already taken, so whoever loses
+/// the race reads the winner's token.
+fn create_k3s_token(path: &Path) -> Result<String> {
+    prepare_secret_parent(path)?;
     let token = random_token();
-    write_secret_file(&path, &token)?;
-    Ok(token)
+    let staged = stage_secret(path, &token)?;
+    match fs::hard_link(&staged, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&staged);
+            Ok(token)
+        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&staged);
+            read_secret_file(path).map(|text| text.trim().to_string())
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&staged);
+            Err(err).with_context(|| format!("failed to create {}", path.display()))
+        }
+    }
 }
 
 /// Writes a kubeconfig or cluster token so it is never readable by anyone else,
@@ -109,20 +134,35 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
 /// The rename also replaces a symlink rather than following one planted at a
 /// caller-supplied `--kubeconfig` path.
 pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path
+    prepare_secret_parent(path)?;
+    let staged = stage_secret(path, contents)?;
+    if let Err(err) = fs::rename(&staged, path) {
+        let _ = fs::remove_file(&staged);
+        return Err(err).with_context(|| format!("failed to replace {}", path.display()));
+    }
+    Ok(())
+}
+
+fn prepare_secret_parent(path: &Path) -> Result<()> {
+    let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        // Everything below writes by name inside this directory, so a symlinked
-        // component would place the secret wherever it points. Only the directories
-        // this tool creates are checked; a caller-supplied --kubeconfig path is the
-        // caller's own choice of destination.
-        if parent.starts_with(STATE_DIR) {
-            ensure_real_directories(parent)?;
-        }
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    // Secrets are written by name inside this directory, so a symlinked component
+    // would place them wherever it points. Only the directories this tool creates
+    // are checked; a caller-supplied --kubeconfig path is the caller's own choice
+    // of destination.
+    if parent.starts_with(STATE_DIR) {
+        ensure_real_directories(parent)?;
     }
+    Ok(())
+}
+
+/// Writes `contents` to a fresh 0600 file beside `path` and returns its path.
+fn stage_secret(path: &Path, contents: &str) -> Result<PathBuf> {
     let staged = staging_path(path);
     let write = || -> Result<()> {
         let mut file = fs::OpenOptions::new()
@@ -141,11 +181,7 @@ pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
         let _ = fs::remove_file(&staged);
         return Err(err);
     }
-    if let Err(err) = fs::rename(&staged, path) {
-        let _ = fs::remove_file(&staged);
-        return Err(err).with_context(|| format!("failed to replace {}", path.display()));
-    }
-    Ok(())
+    Ok(staged)
 }
 
 /// A staging name that cannot be guessed ahead of the write.
