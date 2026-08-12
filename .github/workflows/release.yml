@@ -230,9 +230,17 @@ jobs:
           files: dist/*.tar.gz
           generate_release_notes: true
 
-      # The release API attaches to a tag name, so a tag moved during the step
-      # above cannot be refused at that instant. Failing here turns what would be
-      # a silent mismatch between the release and its source into a red run.
+
+  # Its own job, and therefore its own read-only token: the release API attaches
+  # to a tag name, so a tag moved during publication cannot be refused at that
+  # instant. Failing afterwards turns what would be a silent mismatch between the
+  # release and its source into a red run.
+  confirm:
+    name: confirm published commit
+    needs: [resolve, publish]
+    runs-on: ubuntu-24.04
+
+    steps:
       - name: Confirm the published tag is still the built commit
         shell: bash
         env:

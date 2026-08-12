@@ -212,9 +212,14 @@ for platform in "${PLATFORMS[@]}"; do
   # install the wrong thing.
   tar -tvzf "$WORK_DIR/${ARCHIVE_PREFIX}-${RELEASE_TAG}-${platform}.tar.gz" > "$WORK_DIR/members.txt"
   for member in "${BINARIES[@]}" "${DOCS[@]}"; do
-    if ! awk -v want="./$member" '$1 ~ /^-/ && $NF == want { found = 1 } END { exit found ? 0 : 1 }' \
-      "$WORK_DIR/members.txt"; then
-      echo "$platform release archive has no regular file member: $member" >&2
+    # Every entry with the name must be a regular file, not just one of them:
+    # extraction applies entries in order, so a later symlink or directory with
+    # the same name is what ends up installed.
+    if ! awk -v want="./$member" '
+      $NF == want { seen++; if ($1 !~ /^-/) bad++ }
+      END { exit (seen > 0 && bad == 0) ? 0 : 1 }
+    ' "$WORK_DIR/members.txt"; then
+      echo "$platform release archive member is missing or not a regular file: $member" >&2
       exit 1
     fi
   done

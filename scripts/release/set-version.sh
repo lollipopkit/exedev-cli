@@ -121,10 +121,13 @@ fi
 for target in "${TARGETS[@]}"; do
   cp "$target" "$target.bak"
 done
+# Set before the first move, not after the last: an interrupt or a failing mv
+# partway through leaves some manifests new and some old, which is exactly the
+# state the restore exists for.
+APPLIED=1
 for target in "${TARGETS[@]}"; do
   [[ -f "$target.tmp" ]] && mv "$target.tmp" "$target"
 done
-APPLIED=1
 
 # The release build runs with --locked, which fails outright when Cargo.lock still
 # carries the old member versions. Refresh it here rather than leaving the build to

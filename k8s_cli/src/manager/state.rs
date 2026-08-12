@@ -82,7 +82,7 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
         return Ok(token);
     }
     if path.exists() {
-        let token = read_regular_file(&path).map(|text| text.trim().to_string())?;
+        let token = read_secret_file(&path).map(|text| text.trim().to_string())?;
         // An empty file is not a token. Returning it would hand the server and
         // every agent a blank credential, the same way an empty K3S_TOKEN would.
         if token.is_empty() {
@@ -91,9 +91,6 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
                 path.display()
             );
         }
-        // A token left readable by others (an older run, a restored backup) stays
-        // that way for every future run unless it is tightened when reused.
-        restrict_secret_permissions(&path)?;
         return Ok(token);
     }
     let token = random_token();
@@ -112,9 +109,19 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
 /// The rename also replaces a symlink rather than following one planted at a
 /// caller-supplied `--kubeconfig` path.
 pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
+        // Everything below writes by name inside this directory, so a symlinked
+        // component would place the secret wherever it points. Only the directories
+        // this tool creates are checked; a caller-supplied --kubeconfig path is the
+        // caller's own choice of destination.
+        if parent.starts_with(STATE_DIR) {
+            ensure_real_directories(parent)?;
+        }
     }
     let staged = staging_path(path);
     let write = || -> Result<()> {
@@ -158,16 +165,40 @@ fn staging_path(path: &Path) -> PathBuf {
     }
 }
 
-fn restrict_secret_permissions(path: &Path) -> Result<()> {
-    let mode = fs::symlink_metadata(path)
+/// Reads a secret this tool wrote, tightening it if a previous run or a restored
+/// backup left it readable by others.
+///
+/// The permissions are changed through the handle the contents are read from.
+/// `fs::set_permissions` takes a path and follows symlinks, so doing it by name
+/// could chmod whatever an entry swapped in the meantime points at.
+pub(super) fn read_secret_file(path: &Path) -> Result<String> {
+    let (contents, file) = open_regular_file(path)?;
+    let mode = file
+        .metadata()
         .with_context(|| format!("failed to inspect {}", path.display()))?
         .permissions()
         .mode();
-    if mode & 0o077 == 0 {
-        return Ok(());
+    if mode & 0o077 != 0 {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to restrict permissions on {}", path.display()))?;
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("failed to restrict permissions on {}", path.display()))
+    Ok(contents)
+}
+
+fn ensure_real_directories(dir: &Path) -> Result<()> {
+    let mut walked = PathBuf::new();
+    for component in dir.components() {
+        walked.push(component);
+        let metadata = fs::symlink_metadata(&walked)
+            .with_context(|| format!("failed to inspect {}", walked.display()))?;
+        if !metadata.is_dir() {
+            bail!(
+                "{} is not a real directory; remove it and rerun",
+                walked.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn random_suffix() -> String {
@@ -187,6 +218,10 @@ fn random_suffix() -> String {
 /// and that handle is confirmed to be the same object the no-follow inspection
 /// accepted.
 pub(super) fn read_regular_file(path: &Path) -> Result<String> {
+    Ok(open_regular_file(path)?.0)
+}
+
+fn open_regular_file(path: &Path) -> Result<(String, fs::File)> {
     let before = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     if !before.is_file() {
@@ -206,7 +241,7 @@ pub(super) fn read_regular_file(path: &Path) -> Result<String> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(contents)
+    Ok((contents, file))
 }
 
 pub(super) fn random_token() -> String {

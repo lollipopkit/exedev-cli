@@ -557,3 +557,67 @@ fn an_empty_token_file_is_refused() {
     assert!(err.contains("is empty"), "unexpected error: {err}");
     assert!(!generated.unwrap().is_empty());
 }
+
+#[test]
+fn trailing_dot_hosts_compare_equal_with_an_explicit_port() {
+    assert!(same_cluster_endpoint(
+        "https://k3s.example.:6443",
+        "https://k3s.example:6443"
+    ));
+    assert!(same_cluster_endpoint("https://k3s.example.", "k3s.example"));
+    assert!(!same_cluster_endpoint(
+        "https://k3s.example.:6443",
+        "https://other.example:6443"
+    ));
+}
+
+#[test]
+fn stale_owned_taints_are_scheduled_for_removal() {
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        "vm-1".to_string(),
+        parse_kubernetes_nodes(
+            r#"{"items":[{"metadata":{"name":"vm-1"},"spec":{"taints":[
+                {"key":"exedev.dev/pool","value":"blue","effect":"NoSchedule"},
+                {"key":"node.kubernetes.io/unreachable","value":"","effect":"NoExecute"}
+            ]}}]}"#,
+        )
+        .unwrap()
+        .remove("vm-1")
+        .unwrap(),
+    );
+
+    // Dropping the isolation removes our taint and leaves Kubernetes' own alone.
+    assert_eq!(
+        stale_owned_taints(&nodes, "vm-1", None),
+        vec!["exedev.dev/pool-".to_string()]
+    );
+    // Keeping the same key is not stale.
+    assert!(stale_owned_taints(&nodes, "vm-1", Some("exedev.dev/pool=blue:NoSchedule")).is_empty());
+    // Switching keys retires the previous one.
+    assert_eq!(
+        stale_owned_taints(&nodes, "vm-1", Some("exedev.dev/role=x:NoSchedule")),
+        vec!["exedev.dev/pool-".to_string()]
+    );
+}
+
+#[test]
+fn secret_writes_reject_a_symlinked_state_directory() {
+    // The directory is read under the lock: another test holding it has the
+    // process chdir'd into a directory it is about to delete.
+    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let previous_dir = std::env::current_dir().unwrap();
+    let root = std::env::temp_dir().join(format!("exedev-k8s-statelink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_current_dir(&root).unwrap();
+    std::os::unix::fs::symlink("elsewhere", ".exedev-k8s").unwrap();
+
+    let result = write_secret_file(&generated_token_path("c1"), "secret");
+
+    std::env::set_current_dir(&previous_dir).unwrap();
+    let err = result.unwrap_err().to_string();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(err.contains("not a real directory"), "unexpected: {err}");
+}

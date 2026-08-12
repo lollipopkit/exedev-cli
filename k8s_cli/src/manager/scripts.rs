@@ -50,6 +50,22 @@ if printf '%s\n' "$tailscale_lock_output" | grep -qi 'Tailnet Lock is ENABLED'; 
 fi
 "#;
 pub(super) const K3S_INSTALL_HELPERS: &str = r#"
+k3s_pidfile_alive() {
+  # A recorded pid can outlive k3s and be reused by an unrelated process, which
+  # would otherwise read as "already running" and skip the start entirely.
+  [ -f "$1" ] || return 1
+  k3s_recorded_pid="$(cat "$1" 2>/dev/null)"
+  case "$k3s_recorded_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  ${SUDO} kill -0 "$k3s_recorded_pid" 2>/dev/null || return 1
+  k3s_recorded_comm="$(${SUDO} ps -p "$k3s_recorded_pid" -o comm= 2>/dev/null || true)"
+  case "$k3s_recorded_comm" in
+    *k3s*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 has_k3s_supervisor() {
   { command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; } || [ -x /sbin/openrc-run ]
 }
@@ -163,8 +179,13 @@ install_k3s_binary() {
   k3s_tmp_bin="/tmp/exedev-k8s-k3s.$$"
   k3s_tmp_hash="/tmp/exedev-k8s-k3s.sha256.$$"
   k3s_base_url="https://github.com/k3s-io/k3s/releases/download/${k3s_version}"
-  curl -sfL -o "$k3s_tmp_bin" "${k3s_base_url}/k3s${k3s_suffix}"
-  curl -sfL -o "$k3s_tmp_hash" "${k3s_base_url}/sha256sum-${k3s_arch}.txt"
+  if ! curl -sfL -o "$k3s_tmp_bin" "${k3s_base_url}/k3s${k3s_suffix}" \
+    || ! curl -sfL -o "$k3s_tmp_hash" "${k3s_base_url}/sha256sum-${k3s_arch}.txt"; then
+    # Without this a failed download leaves its partial file in /tmp for good.
+    rm -f "$k3s_tmp_bin" "$k3s_tmp_hash"
+    echo "failed to download k3s ${k3s_version}" >&2
+    exit 1
+  fi
 
   k3s_expected="$(grep " k3s${k3s_suffix}$" "$k3s_tmp_hash" | awk '{print $1}')"
   k3s_actual="$(sha256sum "$k3s_tmp_bin" | awk '{print $1}')"
@@ -220,7 +241,7 @@ if has_k3s_supervisor; then
   start_k3s_service_no_block k3s
 else
   install_k3s_binary
-  if ! [ -f /var/run/exedev-k8s-k3s-server.pid ] || ! ${{SUDO}} kill -0 "$(cat /var/run/exedev-k8s-k3s-server.pid)" 2>/dev/null; then
+  if ! k3s_pidfile_alive /var/run/exedev-k8s-k3s-server.pid; then
     ${{SUDO}} env K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" nohup k3s server --write-kubeconfig-mode 600 --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" --advertise-address "$K3S_NODE_IP" --tls-san "$K3S_TLS_SAN" --cluster-cidr "$K3S_CLUSTER_CIDR" --service-cidr "$K3S_SERVICE_CIDR" >/tmp/exedev-k8s-k3s-server.log 2>&1 &
     echo $! | ${{SUDO}} tee /var/run/exedev-k8s-k3s-server.pid >/dev/null
   fi
@@ -271,7 +292,7 @@ if has_k3s_supervisor; then
   restart_k3s_service_no_block k3s-agent
 else
   install_k3s_binary
-  if ! [ -f /var/run/exedev-k8s-k3s-agent.pid ] || ! ${{SUDO}} kill -0 "$(cat /var/run/exedev-k8s-k3s-agent.pid)" 2>/dev/null; then
+  if ! k3s_pidfile_alive /var/run/exedev-k8s-k3s-agent.pid; then
     ${{SUDO}} env K3S_URL="$K3S_SERVER_URL" K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" nohup k3s agent --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" >/tmp/exedev-k8s-k3s-agent.log 2>&1 &
     echo $! | ${{SUDO}} tee /var/run/exedev-k8s-k3s-agent.pid >/dev/null
   fi
@@ -279,7 +300,7 @@ fi
 
 k3s_wait=0
 while [ "$k3s_wait" -lt 30 ]; do
-  if [ -f /var/run/exedev-k8s-k3s-agent.pid ] && ${{SUDO}} kill -0 "$(cat /var/run/exedev-k8s-k3s-agent.pid)" 2>/dev/null; then
+  if k3s_pidfile_alive /var/run/exedev-k8s-k3s-agent.pid; then
     break
   fi
   if has_k3s_supervisor && k3s_service_started k3s-agent; then
@@ -289,7 +310,7 @@ while [ "$k3s_wait" -lt 30 ]; do
   sleep 2
 done
 if ! has_k3s_supervisor; then
-  if ! [ -f /var/run/exedev-k8s-k3s-agent.pid ] || ! ${{SUDO}} kill -0 "$(cat /var/run/exedev-k8s-k3s-agent.pid)" 2>/dev/null; then
+  if ! k3s_pidfile_alive /var/run/exedev-k8s-k3s-agent.pid; then
     echo "k3s agent did not stay running" >&2
     if [ -f /tmp/exedev-k8s-k3s-agent.log ]; then
       ${{SUDO}} tail -n 80 /tmp/exedev-k8s-k3s-agent.log >&2 || true

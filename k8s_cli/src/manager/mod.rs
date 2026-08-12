@@ -13,7 +13,7 @@ use exedev_core::{
     shell,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream},
     path::{Path, PathBuf},
@@ -33,7 +33,7 @@ use kubectl::{
     KUBECTL_PROBE_REQUEST_TIMEOUT, kubectl_apply, kubectl_capture, kubectl_capture_with_timeout,
     kubectl_run_owned,
 };
-use parsing::{parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
+use parsing::{KubernetesNode, parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
 use process::{SshTargets, ensure_tool, remote_capture, remote_run, verify_vm_access};
 use scripts::{
     k3s_agent_install_command, k3s_server_install_command, remote_bootstrap_script,
@@ -50,6 +50,8 @@ const KUBERNETES_API_WAIT_ATTEMPTS: usize = 24;
 const KUBERNETES_NODE_WAIT_ATTEMPTS: usize = 30;
 const KUBERNETES_WAIT_DELAY: Duration = Duration::from_secs(5);
 const LOCAL_K8S_API_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+/// Labels and taints under this prefix are this tool's to reconcile.
+const NODE_LABEL_PREFIX: &str = "exedev.dev/";
 pub(crate) async fn run(cli: K8sCli) -> Result<()> {
     match cli.command {
         K8sCommands::Plan(cmd) => run_plan(&cli.endpoint, cmd).await,
@@ -288,9 +290,18 @@ async fn print_kubernetes_status(plan: &FleetPlan, kubeconfig: Option<&Path>) ->
                 .labels
                 .iter()
                 .all(|(key, value)| actual.labels.get(key) == Some(value));
+            // A node the plan no longer isolates still counts as drift while it
+            // carries one of this tool's taints, so `None` cannot simply be `ok`.
+            let owned_taints = actual
+                .taints
+                .iter()
+                .filter(|taint| {
+                    taint_key(taint).is_some_and(|key| key.starts_with(NODE_LABEL_PREFIX))
+                })
+                .collect::<Vec<_>>();
             let taint_ok = match &expected.taint {
-                Some(taint) => actual.taints.contains(taint),
-                None => true,
+                Some(taint) => owned_taints == [taint],
+                None => owned_taints.is_empty(),
             };
             println!(
                 "  - {} ready={} labels={} taint={}",
@@ -451,17 +462,21 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
 fn same_cluster_endpoint(left: &str, right: &str) -> bool {
     fn parts(url: &str) -> (String, String) {
         let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-        let authority = without_scheme
-            .split('/')
-            .next()
-            .unwrap_or(without_scheme)
-            .trim_end_matches('.');
-        match authority.rsplit_once(':') {
-            Some((host, port)) if port.chars().all(|ch| ch.is_ascii_digit()) => {
-                (host.to_ascii_lowercase(), port.to_string())
+        let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port))
+                if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) =>
+            {
+                (host, port)
             }
-            _ => (authority.to_ascii_lowercase(), "6443".to_string()),
-        }
+            _ => (authority, "6443"),
+        };
+        // The root label is trimmed after the port is split off, so `host.:6443`
+        // and `host:6443` are the same authority.
+        (
+            host.trim_end_matches('.').to_ascii_lowercase(),
+            port.to_string(),
+        )
     }
     parts(left) == parts(right)
 }
@@ -701,6 +716,10 @@ async fn apply_node_metadata(
     include_control_plane: bool,
     kubeconfig: Option<&Path>,
 ) -> Result<()> {
+    let actual = kubectl_capture(kubeconfig, &["get", "nodes", "-o", "json"])
+        .await
+        .and_then(|output| parse_kubernetes_nodes(&output))
+        .unwrap_or_default();
     for node in plan.bootstrap_nodes(include_control_plane) {
         let mut label_args = vec!["label".into(), "node".into(), node.name.clone()];
         label_args.extend(
@@ -724,8 +743,49 @@ async fn apply_node_metadata(
             )
             .await?;
         }
+
+        // Applying the desired taint says nothing about the one before it. A pool
+        // changed to unisolated would keep its old NoSchedule and stay unschedulable
+        // while the plan says otherwise, so taints this tool owns and no longer
+        // wants are removed.
+        for stale in stale_owned_taints(&actual, &node.name, node.taint.as_deref()) {
+            kubectl_run_owned(
+                kubeconfig,
+                vec!["taint".into(), "node".into(), node.name.clone(), stale],
+            )
+            .await?;
+        }
     }
     Ok(())
+}
+
+/// Taint removal arguments (`key-`) for this tool's taints that the plan dropped.
+///
+/// Ownership is the `exedev.dev/` prefix, so taints set by anything else are left
+/// alone.
+fn stale_owned_taints(
+    nodes: &BTreeMap<String, KubernetesNode>,
+    name: &str,
+    desired: Option<&str>,
+) -> Vec<String> {
+    let desired_key = desired.and_then(taint_key);
+    nodes
+        .get(name)
+        .map(|node| {
+            node.taints
+                .iter()
+                .filter_map(|taint| taint_key(taint))
+                .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                .filter(|key| Some(*key) != desired_key)
+                .map(|key| format!("{key}-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn taint_key(taint: &str) -> Option<&str> {
+    let key = taint.split(['=', ':']).next()?;
+    (!key.is_empty()).then_some(key)
 }
 
 fn kubeconfig_for_bootstrap(
