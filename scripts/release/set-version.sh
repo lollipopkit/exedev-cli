@@ -25,20 +25,9 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-VERSION="${VERSION#v}"
-
-# semver.org's reference grammar. The looser "digits, dots and dashes" shape this
-# replaces rejected a valid tag like 1.2.3-rc.1+build.5, because build metadata can
-# follow a prerelease, and accepted invalid ones like 01.2.3, which cargo refuses
-# later in the release with a much less obvious error.
-SEMVER_NUM='(0|[1-9][0-9]*)'
-SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
-
-if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
-  echo "not a semantic version: $VERSION" >&2
-  exit 1
-fi
+# One grammar, shared with the release workflow's resolve step, which rejects a
+# bad tag before any build starts.
+VERSION="$("$SCRIPT_DIR/check-version.sh" "$VERSION")"
 
 set_package_version() {
   local src="$1" dest="$2"
@@ -121,11 +110,19 @@ for key in "${PATH_DEP_KEYS[@]}"; do
   mv "$ROOT_MANIFEST.next" "$ROOT_MANIFEST.tmp"
 done
 
+# Cargo.lock is backed up but never staged: `cargo update` writes it below, and a
+# failure or interrupt there would otherwise leave a refreshed lockfile beside
+# restored manifests.
+LOCKFILE="$REPO_ROOT/Cargo.lock"
+if [[ -f "$LOCKFILE" ]]; then
+  TARGETS+=("$LOCKFILE")
+fi
+
 for target in "${TARGETS[@]}"; do
   cp "$target" "$target.bak"
 done
 for target in "${TARGETS[@]}"; do
-  mv "$target.tmp" "$target"
+  [[ -f "$target.tmp" ]] && mv "$target.tmp" "$target"
 done
 APPLIED=1
 

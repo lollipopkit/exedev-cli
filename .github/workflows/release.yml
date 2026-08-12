@@ -26,6 +26,11 @@ jobs:
       sha: ${{ steps.meta.outputs.sha }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       # Resolved once, here, so every matrix build and the publish step agree on a
       # single immutable commit. Resolving the tag independently per job would let a
       # tag moved mid-run produce archives from more than one commit.
@@ -39,11 +44,19 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${INPUT_TAG_NAME}"
+            # Rejected here rather than in each matrix build, where set-version
+            # would fail four times over after the checkouts and toolchain setup.
+            scripts/release/check-version.sh "${tag}"
             sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
             type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
             # An annotated tag points at a tag object, not the commit it names.
             if [[ "${type}" == "tag" ]]; then
+              type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.type')"
               sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+            fi
+            if [[ "${type}" != "commit" ]]; then
+              echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
+              exit 1
             fi
           else
             tag="${GITHUB_REF_NAME}"
@@ -76,7 +89,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # The commit the resolve job pinned, never a ref name: a ref is resolved
           # again at checkout time, so a tag moved between the trigger and this step
@@ -88,12 +101,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}
 
@@ -154,7 +167,7 @@ jobs:
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload archive artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/${{ steps.package.outputs.archive }}
@@ -169,7 +182,7 @@ jobs:
 
     steps:
       - name: Download release archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-*
           path: dist

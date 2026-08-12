@@ -115,6 +115,20 @@ if [[ -z "$TAP_FORMULA_PATH" ]]; then
   exit 1
 fi
 
+# The path is created and truncated below, so an explicit value gets the same
+# scrutiny as a discovered one: a `../` path or a non-formula target would
+# overwrite a file that is not a formula.
+if [[ "$TAP_FORMULA_PATH" != *.rb ]]; then
+  echo "TAP_FORMULA_PATH must name a .rb formula file: $TAP_FORMULA_PATH" >&2
+  exit 1
+fi
+case "$TAP_FORMULA_PATH" in
+  *..*)
+    echo "TAP_FORMULA_PATH must not traverse with '..': $TAP_FORMULA_PATH" >&2
+    exit 1
+    ;;
+esac
+
 if [[ -z "$EXPLICIT_TAP_FORMULA_PATH" && -n "$TAP_REPO_PATH" && ! -d "$TAP_REPO_PATH" ]]; then
   echo "TAP_REPO_PATH does not exist: $TAP_REPO_PATH" >&2
   exit 1

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Validates a release version or tag against semver.org's reference grammar and
+# prints the version with any leading `v` removed.
+#
+# Kept apart from set-version.sh so the release workflow can reject a bad tag at
+# the point it is resolved, before four matrix builds check out and install a
+# toolchain only to fail on the same string.
+
+VERSION="${1:-${RELEASE_TAG:-}}"
+
+if [[ -z "$VERSION" ]]; then
+  echo "usage: $(basename "$0") <version>" >&2
+  echo "Accepts either 0.1.22 or v0.1.22; RELEASE_TAG is used when no argument is given." >&2
+  exit 1
+fi
+
+VERSION="${VERSION#v}"
+
+SEMVER_NUM='(0|[1-9][0-9]*)'
+SEMVER_PRE_ID="(${SEMVER_NUM}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_RE="^${SEMVER_NUM}\.${SEMVER_NUM}\.${SEMVER_NUM}(-${SEMVER_PRE_ID}(\.${SEMVER_PRE_ID})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
+
+if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+  echo "not a semantic version: $VERSION" >&2
+  echo "Expected something like v0.1.11 or 1.2.3-rc.1+build.5." >&2
+  exit 1
+fi
+
+printf '%s\n' "$VERSION"

@@ -3,24 +3,56 @@ use anyhow::{Context, Result, bail};
 use rand::{RngExt, distr::Alphanumeric};
 use std::{
     env, fs,
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
+    io::{Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 const STATE_DIR: &str = ".exedev-k8s";
 
 pub(super) fn generated_kubeconfig_path(cluster_name: &str) -> PathBuf {
-    Path::new(STATE_DIR).join(cluster_name).join("kubeconfig")
+    Path::new(STATE_DIR)
+        .join(state_dir_name(cluster_name))
+        .join("kubeconfig")
 }
 
 pub(super) fn generated_token_path(cluster_name: &str) -> PathBuf {
-    Path::new(STATE_DIR).join(cluster_name).join("k3s-token")
+    Path::new(STATE_DIR)
+        .join(state_dir_name(cluster_name))
+        .join("k3s-token")
+}
+
+/// Keeps a cluster name from reaching outside the state directory.
+///
+/// The name comes from fleet.yaml, which only requires it to be non-empty, so
+/// `../../elsewhere` would otherwise place the token and kubeconfig outside
+/// `.exedev-k8s`. Anything that is not a plain name component is replaced.
+fn state_dir_name(cluster_name: &str) -> String {
+    let sanitized = cluster_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim_matches('_').is_empty() {
+        "cluster".to_string()
+    } else {
+        sanitized
+    }
 }
 
 pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
     let path = generated_token_path(cluster_name);
     if let Ok(token) = env::var(K3S_TOKEN_ENV) {
+        // An exported but empty value would otherwise become the cluster
+        // credential for the server and every agent.
+        if token.trim().is_empty() {
+            bail!("{K3S_TOKEN_ENV} is set but empty");
+        }
         if path.exists() {
             let file_token = read_regular_file(&path)?;
             if file_token.trim() != token {
@@ -33,7 +65,11 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
         return Ok(token);
     }
     if path.exists() {
-        return read_regular_file(&path).map(|text| text.trim().to_string());
+        let token = read_regular_file(&path).map(|text| text.trim().to_string())?;
+        // A token left readable by others (an older run, a restored backup) stays
+        // that way for every future run unless it is tightened when reused.
+        restrict_secret_permissions(&path)?;
+        return Ok(token);
     }
     let token = random_token();
     write_secret_file(&path, &token)?;
@@ -56,8 +92,6 @@ pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let staged = staging_path(path);
-    // A staged file from a crashed run with this pid would fail the create below.
-    let _ = fs::remove_file(&staged);
     let write = || -> Result<()> {
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -82,33 +116,72 @@ pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// A staging name that cannot be guessed ahead of the write.
+///
+/// The name is random rather than derived from the pid so nothing can be waiting
+/// at it. Combined with `create_new`, which refuses an existing entry of any kind
+/// including a symlink, the staged file is always one this process just made.
 fn staging_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "secret".to_string());
-    let staged = format!(".{name}.{}.tmp", std::process::id());
+    let staged = format!(".{name}.{}.tmp", random_suffix());
     match path.parent() {
         Some(parent) => parent.join(staged),
         None => PathBuf::from(staged),
     }
 }
 
+fn restrict_secret_permissions(path: &Path) -> Result<()> {
+    let mode = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o077 == 0 {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to restrict permissions on {}", path.display()))
+}
+
+fn random_suffix() -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect()
+}
+
 /// Reads a file that must be a real file this tool wrote.
 ///
 /// `fs::read_to_string` follows symlinks, so an entry swapped for a link to
 /// another readable file would have that file's contents adopted as the cluster
-/// token.
+/// token. Inspecting the path and then reading it would still leave a gap for the
+/// entry to be swapped in between, so the contents are read through one handle
+/// and that handle is confirmed to be the same object the no-follow inspection
+/// accepted.
 pub(super) fn read_regular_file(path: &Path) -> Result<String> {
-    let metadata = fs::symlink_metadata(path)
+    let before = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
-    if !metadata.is_file() {
+    if !before.is_file() {
         bail!(
             "{} is not a regular file; remove it and rerun",
             path.display()
         );
     }
-    fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let opened = file
+        .metadata()
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if opened.dev() != before.dev() || opened.ino() != before.ino() {
+        bail!("{} changed while it was being read", path.display());
+    }
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(contents)
 }
 
 pub(super) fn random_token() -> String {

@@ -215,13 +215,13 @@ K3S_SERVICE_CIDR={}
 require_no_k3s_agent_state_for_server
 if has_k3s_supervisor; then
   if ! command -v k3s >/dev/null 2>&1; then
-    curl -sfL https://get.k3s.io | ${{SUDO}} env INSTALL_K3S_SKIP_START=true K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" sh -s - server --write-kubeconfig-mode 644 --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" --advertise-address "$K3S_NODE_IP" --tls-san "$K3S_TLS_SAN" --cluster-cidr "$K3S_CLUSTER_CIDR" --service-cidr "$K3S_SERVICE_CIDR"
+    curl -sfL https://get.k3s.io | ${{SUDO}} env INSTALL_K3S_SKIP_START=true K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" sh -s - server --write-kubeconfig-mode 600 --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" --advertise-address "$K3S_NODE_IP" --tls-san "$K3S_TLS_SAN" --cluster-cidr "$K3S_CLUSTER_CIDR" --service-cidr "$K3S_SERVICE_CIDR"
   fi
   start_k3s_service_no_block k3s
 else
   install_k3s_binary
   if ! [ -f /var/run/exedev-k8s-k3s-server.pid ] || ! ${{SUDO}} kill -0 "$(cat /var/run/exedev-k8s-k3s-server.pid)" 2>/dev/null; then
-    ${{SUDO}} env K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" nohup k3s server --write-kubeconfig-mode 644 --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" --advertise-address "$K3S_NODE_IP" --tls-san "$K3S_TLS_SAN" --cluster-cidr "$K3S_CLUSTER_CIDR" --service-cidr "$K3S_SERVICE_CIDR" >/tmp/exedev-k8s-k3s-server.log 2>&1 &
+    ${{SUDO}} env K3S_TOKEN="$K3S_BOOTSTRAP_TOKEN" nohup k3s server --write-kubeconfig-mode 600 --node-name "$K3S_NODE_NAME" --node-ip "$K3S_NODE_IP" --advertise-address "$K3S_NODE_IP" --tls-san "$K3S_TLS_SAN" --cluster-cidr "$K3S_CLUSTER_CIDR" --service-cidr "$K3S_SERVICE_CIDR" >/tmp/exedev-k8s-k3s-server.log 2>&1 &
     echo $! | ${{SUDO}} tee /var/run/exedev-k8s-k3s-server.pid >/dev/null
   fi
 fi

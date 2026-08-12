@@ -31,9 +31,10 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
             // has.
             if let Ok(inner) = serde_json::from_str::<Value>(output.trim()) {
                 collect_vm_names_from_json(&inner, &mut names);
-                if !names.is_empty() {
-                    return Ok(names);
-                }
+                // Whatever the listing held is the answer, including nothing. A
+                // wrapped `[]` or an error object handed to the text parser would
+                // come back as a VM named after the JSON itself.
+                return Ok(names);
             }
             return Ok(parse_vm_names_from_text(output));
         }

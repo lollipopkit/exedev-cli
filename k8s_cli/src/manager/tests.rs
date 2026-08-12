@@ -10,7 +10,9 @@ use super::process::{
 use super::scripts::{
     k3s_agent_install_command, k3s_server_install_command, tailscale_install_command,
 };
-use super::state::{read_regular_file, write_secret_file};
+use super::state::{
+    generated_kubeconfig_path, generated_token_path, read_regular_file, write_secret_file,
+};
 use super::*;
 use std::{collections::BTreeMap, path::Path};
 
@@ -118,7 +120,10 @@ fn k3s_server_install_command_supports_no_supervisor_fallback() {
     assert!(command.contains("INSTALL_K3S_SKIP_START=true"));
     assert!(command.contains("start_k3s_service_no_block k3s"));
     assert!(command.contains("systemctl start --no-block \"$k3s_service\""));
-    assert!(command.contains("--write-kubeconfig-mode 644 --node-name \"$K3S_NODE_NAME\""));
+    // 600, not 644: k3s.yaml holds client credentials and fetch_kubeconfig reads
+    // it through sudo, so nothing needs it world-readable on the VM.
+    assert!(command.contains("--write-kubeconfig-mode 600 --node-name \"$K3S_NODE_NAME\""));
+    assert!(!command.contains("--write-kubeconfig-mode 644"));
     assert!(command.contains("require_no_k3s_agent_state_for_server"));
     assert!(command.contains("--cluster-cidr \"$K3S_CLUSTER_CIDR\""));
     assert!(command.contains("--service-cidr \"$K3S_SERVICE_CIDR\""));
@@ -427,5 +432,44 @@ fn symlinked_token_is_rejected_rather_than_followed() {
     let err = read_regular_file(&token_path).unwrap_err();
     assert!(err.to_string().contains("not a regular file"));
 
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn wrapped_empty_listing_invents_no_vm_name() {
+    assert!(parse_vm_names(r#"{"output":"[]"}"#).unwrap().is_empty());
+    assert!(
+        parse_vm_names(r#"{"output":"{\"error\":\"quota exceeded\"}"}"#)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn cluster_name_cannot_escape_the_state_directory() {
+    let path = generated_token_path("../../outside");
+    assert!(path.starts_with(".exedev-k8s"));
+    assert!(!path.to_string_lossy().contains(".."));
+    assert!(generated_kubeconfig_path("../../outside").starts_with(".exedev-k8s"));
+    assert_eq!(
+        generated_token_path("prod-1"),
+        Path::new(".exedev-k8s/prod-1/k3s-token")
+    );
+}
+
+#[test]
+fn staging_names_do_not_repeat() {
+    let dir = std::env::temp_dir().join(format!("exedev-k8s-staging-{}", std::process::id()));
+    let path = dir.join("k3s-token");
+    let _ = std::fs::remove_dir_all(&dir);
+    write_secret_file(&path, "one").unwrap();
+    write_secret_file(&path, "two").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+    let leftovers = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(leftovers, 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }

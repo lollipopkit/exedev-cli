@@ -75,10 +75,14 @@ fn is_dangerous(command: &str) -> bool {
         "team disable",
         "team settings auto-join on",
         "domain rm ",
+        // Both sides of reserved capacity: creating a pool reserves it, and the
+        // list already prompts before `billing capacity` changes the subscription.
+        "pool new ",
         "pool delete ",
         "billing capacity",
         "billing credits buy ",
         "billing payment remove ",
+        "billing payment default ",
     ];
     prefixes
         .iter()
@@ -138,7 +142,11 @@ mod tests {
         assert!(is_dangerous("share remove-link mybox tok"));
         assert!(is_dangerous("share set-private mybox"));
         assert!(is_dangerous("domain add mybox app.example.com"));
+        assert!(is_dangerous("pool new builders --cpus 16 --region fra"));
+        assert!(is_dangerous("billing payment default 4f1c2a9b"));
         assert!(!is_dangerous("ls"));
+        assert!(!is_dangerous("pool list"));
+        assert!(!is_dangerous("billing payment list"));
         assert!(!is_dangerous("ssh-key list"));
         assert!(!is_dangerous("share show mybox"));
         assert!(!is_dangerous("domain ls mybox"));
