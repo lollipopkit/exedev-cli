@@ -11,7 +11,7 @@ use super::scripts::{
     k3s_agent_install_command, k3s_server_install_command, tailscale_install_command,
 };
 use super::state::{
-    create_k3s_token, generated_kubeconfig_path, generated_token_path, read_secret_file,
+    create_k3s_token, fnv1a, generated_kubeconfig_path, generated_token_path, read_secret_file,
     write_secret_file,
 };
 use super::*;
@@ -527,22 +527,21 @@ fn distinct_cluster_names_get_distinct_state_directories() {
     assert_eq!(generated_token_path("a/b"), generated_token_path("a/b"));
 }
 
-fn is_same_cluster(left: &str, right: &str) -> bool {
-    same_cluster_endpoint(left, right).is_some()
-}
-
 #[test]
 fn cluster_endpoints_compare_by_host_and_port() {
-    assert!(is_same_cluster(
+    assert!(same_cluster_endpoint(
         "https://100.64.0.1:6443",
         "https://100.64.0.1:6443"
     ));
-    assert!(is_same_cluster("https://k3s.example", "k3s.example:6443"));
-    assert!(!is_same_cluster(
+    assert!(same_cluster_endpoint(
+        "https://k3s.example",
+        "k3s.example:6443"
+    ));
+    assert!(!same_cluster_endpoint(
         "https://100.64.0.1:6443",
         "https://100.64.0.2:6443"
     ));
-    assert!(!is_same_cluster(
+    assert!(!same_cluster_endpoint(
         "https://100.64.0.1:6443",
         "https://100.64.0.1:7443"
     ));
@@ -647,16 +646,16 @@ fn bare_json_strings_must_look_like_vm_names() {
 #[test]
 fn cluster_endpoints_require_a_matching_scheme() {
     // http:// is not the HTTPS API endpoint the kubeconfig names.
-    assert!(!is_same_cluster(
+    assert!(!same_cluster_endpoint(
         "https://cluster.example:6443",
         "http://cluster.example:6443"
     ));
-    assert!(!is_same_cluster(
+    assert!(!same_cluster_endpoint(
         "ssh://cluster.example:6443",
         "https://cluster.example:6443"
     ));
     // More than one trailing dot is not a hostname.
-    assert!(!is_same_cluster(
+    assert!(!same_cluster_endpoint(
         "https://k3s.example...:6443",
         "https://k3s.example:6443"
     ));
@@ -859,4 +858,35 @@ projects:
     // prefix that the tool does not generate: the repo's own fixtures use those.
     assert!(FleetFile::from_yaml_str(&fleet("          team: platform")).is_ok());
     assert!(FleetFile::from_yaml_str(&fleet("          exedev.dev/test-case: shared")).is_ok());
+}
+
+#[test]
+fn generic_name_fields_must_look_like_vm_names() {
+    // An error object carrying `name` is not a VM; `vm_name` is taken as given.
+    assert!(
+        parse_vm_names(r#"[{"name":"QuotaExceeded","message":"no capacity"}]"#)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        parse_vm_names(r#"[{"vm_name":"UPPER-vm"}]"#).unwrap(),
+        BTreeSet::from(["UPPER-vm".to_string()])
+    );
+}
+
+#[test]
+fn an_empty_listing_response_is_an_error() {
+    // Distinct from an empty list: nothing came back at all.
+    assert!(parse_vm_names("").is_err());
+    assert!(parse_vm_names("   \n").is_err());
+    assert!(parse_vm_names("[]").unwrap().is_empty());
+}
+
+#[test]
+fn fnv1a_matches_the_reference_vectors() {
+    // The published FNV-1a 64-bit digests; a wrong prime silently weakens the
+    // digest that keeps two sanitized cluster names apart.
+    assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a(b"foobar"), 0x8594_4171_f739_67e8);
 }

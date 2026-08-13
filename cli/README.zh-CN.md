@@ -168,6 +168,9 @@ arguments 原样发送，不会被注入任何 flag，因此会在服务端要�
 全局 `--yes` 仍然会跳过本 CLI 自身的确认提示；全局 `--json` 也仍然生效，因为它
 选择的是输出格式，不改变命令本身的行为。
 
+`new --command` 已移除：exe.dev 的 `new` 选项列表中已无此项，转发只会得到服务端
+错误。如果你的账号仍接受它，可用 `exedev-ctl exec -- new --command ...` 原样发送。
+
 有两个已文档化的 command 不提供 typed wrapper：它们都是一次性接入操作，没有
 automation 价值，并且都以 argument 传递 token —— 包装成 typed wrapper 并不会让它
 更安全。

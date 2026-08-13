@@ -299,7 +299,7 @@ with `--yes`.
 | Narrowing access | `share set-private`, `integrations detach` |
 | Credentials | `ssh-key add`, `ssh-key generate-api-key`, `integrations add`, `integrations attach`, `integrations setup`, `integrations edit`, `team auth set` |
 | Domains | `domain add` |
-| Spending | `billing capacity`, `billing credits buy`, `billing payment remove`, `billing payment default`, `pool new` |
+| Spending | `resize`, `cp`, `pool new`, `billing capacity`, `billing credits buy`, `billing payment remove`, `billing payment default` |
 | Ownership | `team role`, `team transfer`, `team disable` |
 
 `integrations setup <type> --list` and `--verify` are exempt, since they only

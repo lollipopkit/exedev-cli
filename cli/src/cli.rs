@@ -488,6 +488,7 @@ pub(crate) struct TeamVmSharingCmd {
 #[derive(Debug, Args)]
 pub(crate) struct TeamAutoJoinCmd {
     /// One of on, off.
+    #[arg(value_parser = ["on", "off"])]
     pub(crate) value: String,
 }
 

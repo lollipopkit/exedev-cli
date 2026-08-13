@@ -77,8 +77,12 @@ fn is_dangerous(command: &str) -> bool {
         "team settings vm-sharing",
         "team disable",
         "team settings auto-join on",
-        // Both sides of reserved capacity: creating a pool reserves it, and the
-        // list already prompts before `billing capacity` changes the subscription.
+        // Anything that changes what the account is billed for. `resize` and `cp`
+        // take effect immediately, and creating a pool reserves capacity, so they
+        // belong with the subscription commands below rather than outside the
+        // "spending" category the skill documents.
+        "resize",
+        "cp",
         "pool new",
         "pool delete",
         "billing capacity",
@@ -178,6 +182,8 @@ mod tests {
         assert!(is_dangerous("share set-private mybox"));
         assert!(is_dangerous("domain add mybox app.example.com"));
         assert!(is_dangerous("pool new builders --cpus 16 --region fra"));
+        assert!(is_dangerous("resize mybox --cpu 64"));
+        assert!(is_dangerous("cp mybox mybox-2"));
         assert!(is_dangerous("billing payment default 4f1c2a9b"));
         assert!(is_dangerous("share receive-email mybox on"));
         assert!(!is_dangerous("ls"));

@@ -51,6 +51,11 @@ impl SshTargets {
         Self(destinations)
     }
 
+    /// Adds destinations that take precedence over what is already known.
+    pub(super) fn extend(&mut self, destinations: BTreeMap<String, String>) {
+        self.0.extend(destinations);
+    }
+
     /// The destination reported by exe.dev, or the `<vm>.exe.xyz` hostname when
     /// exe.dev did not report one (for example a VM outside this account's `ls`).
     pub(super) fn dest(&self, vm: &str) -> String {

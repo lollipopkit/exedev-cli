@@ -59,8 +59,12 @@ k3s_pidfile_alive() {
     ''|*[!0-9]*) return 1 ;;
   esac
   ${SUDO} kill -0 "$k3s_recorded_pid" 2>/dev/null || return 1
-  k3s_recorded_comm="$(${SUDO} ps -p "$k3s_recorded_pid" -o comm= 2>/dev/null || true)"
-  case "$k3s_recorded_comm" in
+  # The recorded pid is the backgrounded job, which is the `sudo`/`nohup`/`env`
+  # wrapper rather than k3s itself, so its comm never says k3s. The full argument
+  # vector does, and still tells an unrelated process that inherited the pid from
+  # the one this wrote down.
+  k3s_recorded_args="$(${SUDO} ps -p "$k3s_recorded_pid" -o args= 2>/dev/null || true)"
+  case "$k3s_recorded_args" in
     *k3s*) return 0 ;;
     *) return 1 ;;
   esac

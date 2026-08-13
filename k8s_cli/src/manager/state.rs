@@ -11,18 +11,47 @@ use std::{
 const STATE_DIR: &str = ".exedev-k8s";
 
 pub(super) fn generated_kubeconfig_path(cluster_name: &str) -> PathBuf {
-    Path::new(STATE_DIR)
-        .join(state_dir_name(cluster_name))
-        .join("kubeconfig")
+    state_dir(cluster_name).join("kubeconfig")
 }
 
 pub(super) fn generated_token_path(cluster_name: &str) -> PathBuf {
-    Path::new(STATE_DIR)
-        .join(state_dir_name(cluster_name))
-        .join("k3s-token")
+    state_dir(cluster_name).join("k3s-token")
+}
+
+fn state_dir(cluster_name: &str) -> PathBuf {
+    let dir = Path::new(STATE_DIR).join(state_dir_name(cluster_name));
+    adopt_legacy_state_dir(cluster_name, &dir);
+    dir
+}
+
+/// TODO(remove after the next release): moves state written under the raw cluster
+/// name to the sanitized directory.
+///
+/// Without it a cluster named `prod.example` silently starts from an empty state
+/// directory, mints a fresh token, and installs a server the existing agents
+/// cannot join. Only an exact rename is attempted; anything else is left alone
+/// for the operator to resolve.
+fn adopt_legacy_state_dir(cluster_name: &str, current: &Path) {
+    let legacy = Path::new(STATE_DIR).join(cluster_name);
+    if legacy == current || current.exists() || !legacy.is_dir() {
+        return;
+    }
+    if fs::rename(&legacy, current).is_ok() {
+        eprintln!(
+            "note: moved cluster state from {} to {}",
+            legacy.display(),
+            current.display()
+        );
+    }
 }
 
 /// Keeps a cluster name from reaching outside the state directory.
+///
+/// TODO(remove after the next release): a cluster whose name contains anything
+/// outside `[A-Za-z0-9_-]` used its raw name as the directory before this, so its
+/// kubeconfig and token are still at `.exedev-k8s/<raw name>/`. `adopt_legacy_state_dir`
+/// moves them across on first use; delete it, and this note, once no such
+/// directory is expected to exist.
 ///
 /// The name comes from fleet.yaml, which only requires it to be non-empty, so
 /// `../../elsewhere` would otherwise place the token and kubeconfig outside
@@ -53,11 +82,11 @@ fn state_dir_name(cluster_name: &str) -> String {
 
 /// FNV-1a, spelled out so the directory a cluster uses never changes with the
 /// toolchain the way `DefaultHasher` would.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x1000_0000_01b3);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
 }

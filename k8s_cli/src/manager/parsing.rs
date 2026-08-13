@@ -16,10 +16,16 @@ pub(super) struct KubernetesNode {
 /// display name happens to be, and attach its destination to the wrong node.
 const VM_NAME_KEYS: [&str; 5] = ["vm_name", "vmName", "vmname", "name", "vm"];
 
+/// The keys that identify a record as a VM rather than merely naming something.
+const AUTHORITATIVE_VM_NAME_KEYS: [&str; 3] = ["vm_name", "vmName", "vmname"];
+
 pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
     let trimmed = response.trim();
     if trimmed.is_empty() {
-        return Ok(BTreeSet::new());
+        // Not an empty listing: a truncated or dropped response would otherwise
+        // read as "this account has no VMs" and have bootstrap recreate all of
+        // them, or destroy report nothing to do.
+        bail!("exe.dev returned an empty response where a VM listing was expected");
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         let mut names = BTreeSet::new();
@@ -67,7 +73,12 @@ fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {
         Value::Object(object) => {
             for key in VM_NAME_KEYS {
                 if let Some(name) = object.get(key).and_then(Value::as_str) {
-                    names.insert(name.to_string());
+                    // `vm_name` says what it is; `name` on some other record — a
+                    // team, a pool, an error object — does not, so it has to look
+                    // like a VM name before it becomes inventory.
+                    if AUTHORITATIVE_VM_NAME_KEYS.contains(&key) || is_vm_name(name) {
+                        names.insert(name.to_string());
+                    }
                     break;
                 }
             }

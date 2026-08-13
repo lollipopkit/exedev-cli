@@ -172,6 +172,10 @@ them, so a command that prompts server-side (`team disable`,
 still applies, because it selects the output format rather than changing what
 the command does.
 
+`new --command` was removed: exe.dev no longer lists it among `new`'s options,
+so forwarding it only produced a server-side error. If your account still accepts
+it, `exedev-ctl exec -- new --command ...` sends it unchanged.
+
 Two documented commands are intentionally left to `exec`. Both are one-time
 onboarding steps with no automation value, and both take a token as a positional
 argument or flag value, which a typed wrapper would not make any safer:

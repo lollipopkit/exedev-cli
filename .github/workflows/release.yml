@@ -44,6 +44,10 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${INPUT_TAG_NAME}"
+            # Validated before it is used, not after: the tag goes into an API path
+            # below, where `../../owner/repo/git/ref/tags/v1` would traverse to
+            # another repository and resolve a SHA there.
+            scripts/release/check-version.sh "${tag}" > /dev/null
             # One read of the ref, then one of the tag object: asking twice can
             # pair a SHA from before a tag move with a type from after it.
             ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
@@ -66,11 +70,9 @@ jobs:
             tag="${GITHUB_REF_NAME}"
             sha="${GITHUB_SHA}"
           fi
-          # Rejected here on either path rather than in each matrix build, where
-          # set-version would fail four times over after the checkouts and
-          # toolchain setup. The push trigger only filters `v*`, so a pushed
-          # `v1.2` reaches this point too.
-          scripts/release/check-version.sh "${tag}"
+          # The push path only filters `v*`, so a pushed `v1.2` is rejected here
+          # rather than in each matrix build, after four checkouts and toolchains.
+          scripts/release/check-version.sh "${tag}" > /dev/null
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 

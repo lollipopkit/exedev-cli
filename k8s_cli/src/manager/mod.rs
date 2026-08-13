@@ -88,7 +88,7 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     confirm("Run this bootstrap plan?", yes)?;
 
     let client = exe_client(endpoint)?;
-    create_missing_vms(
+    let created = create_missing_vms(
         &client,
         &plan,
         include_control_plane,
@@ -96,8 +96,12 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
         &cmd.fleet,
     )
     .await?;
-    // Re-read the VM list so VMs created above contribute their SSH destination.
-    let inventory = fetch_inventory(endpoint).await?;
+    // Re-read the VM list, then let the creation responses win: provisioning is
+    // asynchronous, so a VM made moments ago may not carry a destination in `ls`
+    // yet, and falling back to the hostname is what the destination map exists to
+    // avoid.
+    let mut inventory = fetch_inventory(endpoint).await?;
+    inventory.ssh_targets.extend(created);
     let new_cluster_access = bootstrap_k3s(
         &plan,
         cmd.mode,
@@ -338,32 +342,39 @@ async fn create_missing_vms(
     include_control_plane: bool,
     inventory: &VmInventory,
     fleet_path: &Path,
-) -> Result<()> {
+) -> Result<BTreeMap<String, String>> {
+    let mut created = BTreeMap::new();
     for node in plan.bootstrap_nodes(include_control_plane) {
         if inventory.names.contains(&node.name) {
             continue;
         }
         let command = exe_new_command(node);
         println!("{} {command}", output::label("exe.dev:"));
-        if let Err(err) = client.exec(&command).await {
-            if is_vm_name_unavailable_error(&err, &node.name) {
-                println!(
-                    "{} VM name {} is not available; verifying SSH access before continuing",
-                    output::warn("exe.dev:"),
-                    output::vm(&node.name)
-                );
-                verify_vm_access(&inventory.ssh_targets, &node.name, fleet_path).await?;
-                println!(
-                    "{} verified SSH access to {}; continuing",
-                    output::success("exe.dev:"),
-                    output::vm(&node.name)
-                );
-                continue;
+        match client.exec(&command).await {
+            // The response describes the VM that was just made. Taking its
+            // destination from here does not depend on the next `ls` having caught
+            // up with provisioning.
+            Ok(response) => created.extend(parse_ssh_destinations(&response)),
+            Err(err) => {
+                if is_vm_name_unavailable_error(&err, &node.name) {
+                    println!(
+                        "{} VM name {} is not available; verifying SSH access before continuing",
+                        output::warn("exe.dev:"),
+                        output::vm(&node.name)
+                    );
+                    verify_vm_access(&inventory.ssh_targets, &node.name, fleet_path).await?;
+                    println!(
+                        "{} verified SSH access to {}; continuing",
+                        output::success("exe.dev:"),
+                        output::vm(&node.name)
+                    );
+                    continue;
+                }
+                return Err(err);
             }
-            return Err(err);
         }
     }
-    Ok(())
+    Ok(created)
 }
 
 async fn bootstrap_k3s(
@@ -456,7 +467,7 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
             "kubectl has no cluster server configured; pass --kubeconfig or set KUBECONFIG so {K3S_URL_ENV} and kubectl agree"
         );
     }
-    if same_cluster_endpoint(server, k3s_url).is_none() {
+    if !same_cluster_endpoint(server, k3s_url) {
         bail!(
             "kubectl points at {server} but {K3S_URL_ENV} is {k3s_url}; pass --kubeconfig for that cluster rather than labelling and deploying to another one"
         );
@@ -470,7 +481,7 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
 /// The scheme is part of the identity: `http://host:6443` is not the HTTPS API
 /// endpoint that `https://host:6443` names, and treating them as equal would let
 /// a mistyped K3S_URL through the only check made before workers are joined.
-fn same_cluster_endpoint(left: &str, right: &str) -> Option<(String, String, String)> {
+fn same_cluster_endpoint(left: &str, right: &str) -> bool {
     fn parts(url: &str) -> Option<(String, String, String)> {
         let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
         let scheme = scheme.to_ascii_lowercase();
@@ -494,8 +505,10 @@ fn same_cluster_endpoint(left: &str, right: &str) -> Option<(String, String, Str
         }
         Some((scheme, host.to_ascii_lowercase(), port.to_string()))
     }
-    let left = parts(left)?;
-    parts(right).filter(|right| *right == left)
+    match (parts(left), parts(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 async fn install_tailscale(targets: &SshTargets, vm: &str, authkey: &str) -> Result<()> {
@@ -676,19 +689,17 @@ async fn wait_for_kubernetes_nodes(
             // cannot read, and giving up on the first one would spend none of the
             // retry window and report a parse error instead of the cluster state.
             Ok(output) => {
-                let nodes = match parse_kubernetes_nodes(&output) {
-                    Ok(nodes) => nodes,
-                    Err(err) => {
-                        last_error = err.to_string();
-                        if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
-                            println!(
-                                "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
-                                output::warn("waiting:")
-                            );
-                            sleep(KUBERNETES_WAIT_DELAY).await;
-                        }
-                        continue;
+                // A probe that answers with something unreadable is retried like
+                // any other failed probe, through the shared tail below rather
+                // than a copy of it.
+                let Ok(nodes) = parse_kubernetes_nodes(&output).inspect_err(|err| {
+                    last_error = err.to_string();
+                }) else {
+                    if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
+                        report_node_wait(attempt, &last_error);
+                        sleep(KUBERNETES_WAIT_DELAY).await;
                     }
+                    continue;
                 };
                 let missing = expected
                     .iter()
@@ -718,14 +729,18 @@ async fn wait_for_kubernetes_nodes(
             Err(err) => last_error = err.to_string(),
         }
         if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
-            println!(
-                "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
-                output::warn("waiting:")
-            );
+            report_node_wait(attempt, &last_error);
             sleep(KUBERNETES_WAIT_DELAY).await;
         }
     }
     bail!("Kubernetes nodes did not become ready: {last_error}");
+}
+
+fn report_node_wait(attempt: usize, last_error: &str) {
+    println!(
+        "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
+        output::warn("waiting:")
+    );
 }
 
 async fn apply_node_metadata(
@@ -915,9 +930,13 @@ fn require_env(name: &str) -> Result<String> {
     // A present-but-empty variable would otherwise pass this check and reach the
     // VM as `tailscale up --auth-key ''` or an empty k3s URL/token, failing only
     // after the plan was confirmed and VMs were created.
-    if value.trim().is_empty() {
+    let value = value.trim().to_string();
+    if value.is_empty() {
         bail!("{name} is set but empty");
     }
+    // Trimmed, not just checked trimmed: a token or auth key that keeps a trailing
+    // newline reaches the VM inside quotes and is rejected there, while the same
+    // variable read through read_or_create_k3s_token is trimmed.
     Ok(value)
 }
 

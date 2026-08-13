@@ -280,6 +280,9 @@ impl FleetFile {
         // the same one. Bootstrap keys every VM by name: a duplicate silently
         // collapses two planned nodes into one and gives it whichever role and
         // pool the plan visits last.
+        // Names come from `to_plan` rather than a second expansion here: a copy of
+        // the naming rules would eventually disagree with the plan it is meant to
+        // check.
         let mut seen = BTreeSet::new();
         for node in self.to_plan().nodes {
             if !seen.insert(node.name.clone()) {
