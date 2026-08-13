@@ -72,19 +72,23 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
         ensure_real_directories(parent)?;
     }
     if let Ok(token) = env::var(K3S_TOKEN_ENV) {
+        // Normalized once: comparing a trimmed file against an untrimmed variable
+        // rewrote the file on every run when the value carried a newline, and the
+        // untrimmed value went on to the server and the agents.
+        let token = token.trim().to_string();
         // An exported but empty value would otherwise become the cluster
         // credential for the server and every agent.
-        if token.trim().is_empty() {
+        if token.is_empty() {
             bail!("{K3S_TOKEN_ENV} is set but empty");
         }
-        if path.exists() {
-            let file_token = read_secret_file(&path)?;
-            if file_token.trim() != token {
-                write_secret_file(&path, &token)
-                    .with_context(|| format!("failed to update {}", path.display()))?;
-            }
-        } else {
-            write_secret_file(&path, &token)?;
+        let stored = path
+            .exists()
+            .then(|| read_secret_file(&path))
+            .transpose()?
+            .map(|text| text.trim().to_string());
+        if stored.as_deref() != Some(token.as_str()) {
+            write_secret_file(&path, &token)
+                .with_context(|| format!("failed to update {}", path.display()))?;
         }
         return Ok(token);
     }

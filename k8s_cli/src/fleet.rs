@@ -122,6 +122,73 @@ pub(crate) struct FleetPlan {
     pub(crate) nodes: Vec<NodeSpec>,
 }
 
+/// The subset of the Kubernetes label grammar kubectl accepts on the command line.
+fn is_label_key(key: &str) -> bool {
+    let (prefix, name) = match key.split_once('/') {
+        Some((prefix, name)) => (Some(prefix), name),
+        None => (None, key),
+    };
+    if let Some(prefix) = prefix
+        && (prefix.is_empty() || prefix.len() > 253 || !is_dns_subdomain(prefix))
+    {
+        return false;
+    }
+    is_label_value(name) && !name.is_empty() && name.len() <= 63
+}
+
+fn is_dns_subdomain(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+fn is_label_value(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    value.len() <= 63
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+        && value.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+        && value.ends_with(|ch: char| ch.is_ascii_alphanumeric())
+}
+
+/// The labels `to_plan` sets itself. Other keys under the tool's prefix stay
+/// available to fleet files, which use them for their own bookkeeping.
+const GENERATED_LABEL_KEYS: [&str; 4] = [
+    "exedev.dev/role",
+    "exedev.dev/pool",
+    "exedev.dev/project",
+    "exedev.dev/task",
+];
+
+impl FleetFile {
+    /// Every label a fleet file supplies, with where it came from.
+    fn user_labels(&self) -> Vec<(String, &BTreeMap<String, String>)> {
+        let mut sources = Vec::new();
+        for (project_name, project) in &self.projects {
+            for (task_name, task) in &project.tasks {
+                sources.push((
+                    format!("projects.{project_name}.tasks.{task_name}"),
+                    &task.labels,
+                ));
+            }
+        }
+        for (pool_name, pool) in &self.spare_pools {
+            sources.push((format!("sparePools.{pool_name}"), &pool.labels));
+        }
+        sources
+    }
+}
+
 impl FleetFile {
     pub(crate) fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
@@ -189,6 +256,26 @@ impl FleetFile {
                 bail!("sparePools.{pool_name}.cpu must be greater than 0");
             }
         }
+        // Labels reach `kubectl label` untouched after the fleet is provisioned, so
+        // a bad key is otherwise discovered only once VMs exist and are
+        // bootstrapped. The tool's own prefix is reserved: a worker declaring
+        // `exedev.dev/role: control-plane` would be represented as one.
+        for (source, labels) in self.user_labels() {
+            for (key, value) in labels {
+                if GENERATED_LABEL_KEYS.contains(&key.as_str()) {
+                    bail!(
+                        "{source} sets {key}, which exedev-k8s generates; a worker declaring it could present itself as another role or pool"
+                    );
+                }
+                if !is_label_key(key) {
+                    bail!("{source} sets an invalid Kubernetes label key: {key}");
+                }
+                if !is_label_value(value) {
+                    bail!("{source} sets an invalid Kubernetes label value for {key}: {value}");
+                }
+            }
+        }
+
         // Names are assembled from prefixes and indices, so two pools can produce
         // the same one. Bootstrap keys every VM by name: a duplicate silently
         // collapses two planned nodes into one and gives it whichever role and

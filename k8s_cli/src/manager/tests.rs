@@ -500,7 +500,12 @@ fn error_and_status_text_is_not_taken_for_inventory() {
             .unwrap()
             .is_empty()
     );
-    assert!(parse_vm_names("VM vm-1 is unavailable").unwrap().is_empty());
+    // A body that is not JSON is not a listing at all: reporting it beats
+    // guessing an inventory out of it and deciding a planned VM already exists.
+    let err = parse_vm_names("VM vm-1 is unavailable")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not JSON"), "unexpected: {err}");
     let names = parse_vm_names_from_text("NAME STATUS\nvm-1 running\nnameserver stopped\n");
     assert_eq!(names.len(), 2);
     assert!(names.contains("vm-1"));
@@ -767,4 +772,91 @@ projects:
     .unwrap_err()
     .to_string();
     assert!(err.contains("two VMs named node-1"), "unexpected: {err}");
+}
+
+#[test]
+fn wrapped_table_rows_merge_with_outer_records() {
+    let names =
+        parse_vm_names(r#"{"vms":[{"vm_name":"outer"}],"output":"NAME STATUS\nrow-1 running\n"}"#)
+            .unwrap();
+    assert!(
+        names.contains("outer") && names.contains("row-1"),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_reused_taint_key_with_a_new_effect_is_retired_first() {
+    let nodes = parse_kubernetes_nodes(
+        r#"{"items":[{"metadata":{"name":"vm-1"},"spec":{"taints":[
+            {"key":"exedev.dev/pool","value":"pool","effect":"PreferNoSchedule"}
+        ]}}]}"#,
+    )
+    .unwrap();
+    // Same key, different effect: `kubectl taint key=value:Effect --overwrite`
+    // leaves the other effect in place, so the key has to be cleared first.
+    assert_eq!(
+        stale_owned_taints(&nodes, "vm-1", Some("exedev.dev/pool=pool:NoSchedule")),
+        vec!["exedev.dev/pool-".to_string()]
+    );
+    assert!(
+        stale_owned_taints(
+            &nodes,
+            "vm-1",
+            Some("exedev.dev/pool=pool:PreferNoSchedule")
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn fleet_labels_are_validated_before_anything_is_created() {
+    let fleet = |labels: &str| {
+        format!(
+            r#"
+cluster:
+  name: c
+  controlPlane:
+    nodes: 1
+    vmPrefix: ctl
+projects:
+  p1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: w
+        labels:
+{labels}
+"#
+        )
+    };
+    let reserved = FleetFile::from_yaml_str(&fleet("          exedev.dev/role: control-plane"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        reserved.contains("which exedev-k8s generates"),
+        "{reserved}"
+    );
+
+    let bad_key = FleetFile::from_yaml_str(&fleet("          \"bad key\": value"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bad_key.contains("invalid Kubernetes label key"),
+        "{bad_key}"
+    );
+
+    let bad_value = FleetFile::from_yaml_str(&fleet("          team: \"has space\""))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bad_value.contains("invalid Kubernetes label value"),
+        "{bad_value}"
+    );
+
+    // A label of the user's own is accepted, including one under the tool's
+    // prefix that the tool does not generate: the repo's own fixtures use those.
+    assert!(FleetFile::from_yaml_str(&fleet("          team: platform")).is_ok());
+    assert!(FleetFile::from_yaml_str(&fleet("          exedev.dev/test-case: shared")).is_ok());
 }

@@ -50,8 +50,9 @@ const KUBERNETES_API_WAIT_ATTEMPTS: usize = 24;
 const KUBERNETES_NODE_WAIT_ATTEMPTS: usize = 30;
 const KUBERNETES_WAIT_DELAY: Duration = Duration::from_secs(5);
 const LOCAL_K8S_API_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
-/// Labels and taints under this prefix are this tool's to reconcile.
-const NODE_LABEL_PREFIX: &str = "exedev.dev/";
+/// Labels and taints under this prefix are this tool's to reconcile, and a fleet
+/// file may not supply them.
+pub(crate) const NODE_LABEL_PREFIX: &str = "exedev.dev/";
 pub(crate) async fn run(cli: K8sCli) -> Result<()> {
     match cli.command {
         K8sCommands::Plan(cmd) => run_plan(&cli.endpoint, cmd).await,
@@ -172,7 +173,7 @@ fn load_plan(path: &Path) -> Result<FleetPlan> {
 fn exe_client(endpoint: &str) -> Result<ExeDevClient> {
     let api_key = env::var(API_KEY_ENV)
         .with_context(|| format!("missing {API_KEY_ENV}; export an exe.dev HTTPS API key first"))?;
-    Ok(ExeDevClient::new(endpoint.to_string(), api_key))
+    ExeDevClient::new(endpoint.to_string(), api_key)
 }
 
 /// The exe.dev VMs this account can see, and how to reach each over SSH.
@@ -753,6 +754,17 @@ async fn apply_node_metadata(
         label_args.push("--overwrite".into());
         kubectl_run_owned(kubeconfig, label_args).await?;
 
+        // Removals first: a pool changed to unisolated would otherwise keep its old
+        // NoSchedule, and a key kept with a different effect would end up carrying
+        // both, since `key-` clears every effect for that key.
+        for stale in stale_owned_taints(&actual, &node.name, node.taint.as_deref()) {
+            kubectl_run_owned(
+                kubeconfig,
+                vec!["taint".into(), "node".into(), node.name.clone(), stale],
+            )
+            .await?;
+        }
+
         if let Some(taint) = &node.taint {
             kubectl_run_owned(
                 kubeconfig,
@@ -763,18 +775,6 @@ async fn apply_node_metadata(
                     taint.clone(),
                     "--overwrite".into(),
                 ],
-            )
-            .await?;
-        }
-
-        // Applying the desired taint says nothing about the one before it. A pool
-        // changed to unisolated would keep its old NoSchedule and stay unschedulable
-        // while the plan says otherwise, so taints this tool owns and no longer
-        // wants are removed.
-        for stale in stale_owned_taints(&actual, &node.name, node.taint.as_deref()) {
-            kubectl_run_owned(
-                kubeconfig,
-                vec!["taint".into(), "node".into(), node.name.clone(), stale],
             )
             .await?;
         }
@@ -810,16 +810,20 @@ fn stale_owned_taints(
     name: &str,
     desired: Option<&str>,
 ) -> Vec<String> {
-    let desired_key = desired.and_then(taint_key);
     nodes
         .get(name)
         .map(|node| {
             node.taints
                 .iter()
+                // Compared whole, not by key: the same key with another effect is
+                // a different taint, and leaving it would keep the node more
+                // restricted than the plan asks.
+                .filter(|taint| Some(taint.as_str()) != desired)
                 .filter_map(|taint| taint_key(taint))
                 .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
-                .filter(|key| Some(*key) != desired_key)
                 .map(|key| format!("{key}-"))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect()
         })
         .unwrap_or_default()

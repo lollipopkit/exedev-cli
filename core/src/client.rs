@@ -29,18 +29,21 @@ pub struct ExeDevClient {
 }
 
 impl ExeDevClient {
-    pub fn new(endpoint: String, token: String) -> Self {
-        Self {
+    pub fn new(endpoint: String, token: String) -> Result<Self> {
+        // Redirects are not followed: the endpoint is checked for https once, and
+        // a 307 from there would otherwise resend the command, and the bearer
+        // token on a same-host hop, to somewhere never validated. A build failure
+        // is reported rather than silently swapped for a client that does follow
+        // them.
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to build the exe.dev HTTPS client")?;
+        Ok(Self {
             endpoint,
             token,
-            // Redirects are not followed: the endpoint is checked for https once,
-            // and a 307 from there would otherwise resend the command, and the
-            // bearer token on a same-host hop, to somewhere never validated.
-            http: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
-        }
+            http,
+        })
     }
 
     pub async fn exec(&self, command: &str) -> Result<String> {

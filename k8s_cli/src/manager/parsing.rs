@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,8 +31,10 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
             // rest, and bootstrap would recreate VMs that already exist.
             if let Ok(inner) = serde_json::from_str::<Value>(output.trim()) {
                 collect_vm_names_from_json(&inner, &mut names);
-            } else if names.is_empty() {
-                return Ok(parse_vm_names_from_text(output));
+            } else {
+                // A rendered table is merged like a serialized one; skipping it
+                // when the outer object already named something dropped every row.
+                names.extend(parse_vm_names_from_text(output));
             }
         }
         // A response that parsed as JSON has already been searched. Handing its
@@ -40,7 +42,10 @@ pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
         // a VM named after the JSON itself; an empty list is simply empty.
         return Ok(names);
     }
-    Ok(parse_vm_names_from_text(trimmed))
+    // Not JSON at all. exe.dev answers `/exec` with JSON, so this is an error page
+    // or a transport failure rather than a listing; reading it as a table invents
+    // VMs out of prose and makes a planned VM look like it already exists.
+    bail!("exe.dev returned a response that is not JSON: {trimmed}")
 }
 
 fn collect_vm_names_from_json(value: &Value, names: &mut BTreeSet<String>) {

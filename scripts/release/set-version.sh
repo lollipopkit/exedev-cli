@@ -76,10 +76,10 @@ LOCKFILE=""
 LOCKFILE_CREATED=0
 cleanup_staged() {
   local target
-  release_lock
   # Nothing registered yet: `${TARGETS[@]}` on an empty array is an unbound
   # variable under `set -u`, and an early failure would exit through this.
   if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+    release_lock
     return
   fi
   # An exit between applying the manifests and refreshing the lockfile — an error,
@@ -97,6 +97,8 @@ cleanup_staged() {
   for target in "${TARGETS[@]}"; do
     rm -f "$target.tmp" "$target.next" "$target.bak"
   done
+  # Last: another run starting mid-restore would see a half-rolled-back workspace.
+  release_lock
 }
 
 release_lock() {
