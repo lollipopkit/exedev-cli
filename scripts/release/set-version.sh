@@ -59,6 +59,16 @@ set_path_dep_version() {
 # two versions whenever a later member or the lockfile refresh failed, which is
 # worse than not running at all: the build then reports a version mismatch rather
 # than the actual failure.
+# `mkdir` is the atomic create-or-fail primitive available everywhere this runs.
+# Two concurrent invocations would otherwise both pass the sibling checks below,
+# interleave their moves, and overwrite each other's backups so neither could be
+# rolled back.
+LOCK_DIR="$REPO_ROOT/.set-version.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "another set-version.sh is running (or $LOCK_DIR is stale); remove it if not" >&2
+  exit 1
+fi
+
 TARGETS=()
 APPLIED=0
 REFRESHED=0
@@ -66,6 +76,7 @@ LOCKFILE=""
 LOCKFILE_CREATED=0
 cleanup_staged() {
   local target
+  release_lock
   # Nothing registered yet: `${TARGETS[@]}` on an empty array is an unbound
   # variable under `set -u`, and an early failure would exit through this.
   if [[ "${#TARGETS[@]}" -eq 0 ]]; then
@@ -86,6 +97,10 @@ cleanup_staged() {
   for target in "${TARGETS[@]}"; do
     rm -f "$target.tmp" "$target.next" "$target.bak"
   done
+}
+
+release_lock() {
+  rmdir "$LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_staged EXIT
 trap 'exit 1' INT TERM

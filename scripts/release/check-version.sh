@@ -8,7 +8,14 @@ set -euo pipefail
 # the point it is resolved, before four matrix builds check out and install a
 # toolchain only to fail on the same string.
 
-VERSION="${1:-${RELEASE_TAG:-}}"
+# `${1:-...}` would treat an explicitly passed empty tag as no argument at all and
+# validate RELEASE_TAG instead, reporting success for a version the caller never
+# asked about.
+if [[ $# -ge 1 ]]; then
+  VERSION="$1"
+else
+  VERSION="${RELEASE_TAG:-}"
+fi
 
 if [[ -z "$VERSION" ]]; then
   echo "usage: $(basename "$0") <version>" >&2

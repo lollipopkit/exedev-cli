@@ -9,8 +9,12 @@ pub(super) struct KubernetesNode {
     pub(super) taints: BTreeSet<String>,
 }
 
-/// JSON keys that can hold a VM name, most specific first.
-const VM_NAME_KEYS: [&str; 5] = ["name", "vm", "vmname", "vmName", "vm_name"];
+/// JSON keys that can hold a VM name, most authoritative first.
+///
+/// exe.dev names the field `vm_name`; the rest are older or generic spellings.
+/// Checking `name` first would index a record carrying both under whatever the
+/// display name happens to be, and attach its destination to the wrong node.
+const VM_NAME_KEYS: [&str; 5] = ["vm_name", "vmName", "vmname", "name", "vm"];
 
 pub(super) fn parse_vm_names(response: &str) -> Result<BTreeSet<String>> {
     let trimmed = response.trim();
@@ -132,14 +136,31 @@ fn ssh_destination_from_object(object: &serde_json::Map<String, Value>) -> Optio
             .map(str::trim)
             .filter(|value| !value.is_empty())
     };
-    if let Some(dest) = text("ssh_dest").or_else(|| text("sshDest")) {
+    if let Some(dest) = text("ssh_dest")
+        .or_else(|| text("sshDest"))
+        .filter(|dest| is_ssh_destination(dest))
+    {
         return Some(dest.to_string());
     }
     let host = text("ssh_host").or_else(|| text("sshHost"))?;
-    match text("ssh_user").or_else(|| text("sshUser")) {
-        Some(user) => Some(format!("{user}@{host}")),
-        None => Some(host.to_string()),
-    }
+    let destination = match text("ssh_user").or_else(|| text("sshUser")) {
+        Some(user) => format!("{user}@{host}"),
+        None => host.to_string(),
+    };
+    is_ssh_destination(&destination).then_some(destination)
+}
+
+/// Whether a reported destination is something ssh can be handed as one target.
+///
+/// A value carrying whitespace or control characters is not a destination, and
+/// passing it on produces an ssh failure that reads as the VM being unreachable.
+/// Leaving it out instead keeps the `<vm>.exe.xyz` fallback, which usually works.
+fn is_ssh_destination(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
 }
 
 pub(super) fn parse_vm_names_from_text(text: &str) -> BTreeSet<String> {

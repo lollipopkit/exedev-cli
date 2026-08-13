@@ -33,7 +33,13 @@ impl ExeDevClient {
         Self {
             endpoint,
             token,
-            http: reqwest::Client::new(),
+            // Redirects are not followed: the endpoint is checked for https once,
+            // and a 307 from there would otherwise resend the command, and the
+            // bearer token on a same-host hop, to somewhere never validated.
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 

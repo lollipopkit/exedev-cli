@@ -1,6 +1,10 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 const DEFAULT_IMAGE: &str = "exeuntu";
 
@@ -122,8 +126,12 @@ impl FleetFile {
     pub(crate) fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read fleet file {}", path.display()))?;
-        let fleet = serde_yaml::from_str::<Self>(&text)
-            .with_context(|| format!("failed to parse fleet file {}", path.display()))?;
+        Self::from_yaml_str(&text)
+            .with_context(|| format!("failed to load fleet file {}", path.display()))
+    }
+
+    pub(crate) fn from_yaml_str(text: &str) -> Result<Self> {
+        let fleet = serde_yaml::from_str::<Self>(text).context("failed to parse fleet file")?;
         fleet.validate()?;
         Ok(fleet)
     }
@@ -179,6 +187,19 @@ impl FleetFile {
             }
             if pool.cpu == Some(0) {
                 bail!("sparePools.{pool_name}.cpu must be greater than 0");
+            }
+        }
+        // Names are assembled from prefixes and indices, so two pools can produce
+        // the same one. Bootstrap keys every VM by name: a duplicate silently
+        // collapses two planned nodes into one and gives it whichever role and
+        // pool the plan visits last.
+        let mut seen = BTreeSet::new();
+        for node in self.to_plan().nodes {
+            if !seen.insert(node.name.clone()) {
+                bail!(
+                    "fleet produces two VMs named {}; change a vmPrefix so every node has its own name",
+                    node.name
+                );
             }
         }
         Ok(())

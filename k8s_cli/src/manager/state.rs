@@ -64,6 +64,13 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
     let path = generated_token_path(cluster_name);
+    // Before any read follows it: a symlinked `.exedev-k8s` or cluster directory
+    // would otherwise have an outside file adopted as this cluster's credential.
+    if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        ensure_real_directories(parent)?;
+    }
     if let Ok(token) = env::var(K3S_TOKEN_ENV) {
         // An exported but empty value would otherwise become the cluster
         // credential for the server and every agent.
@@ -71,7 +78,7 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
             bail!("{K3S_TOKEN_ENV} is set but empty");
         }
         if path.exists() {
-            let file_token = read_regular_file(&path)?;
+            let file_token = read_secret_file(&path)?;
             if file_token.trim() != token {
                 write_secret_file(&path, &token)
                     .with_context(|| format!("failed to update {}", path.display()))?;
@@ -103,13 +110,15 @@ pub(super) fn read_or_create_k3s_token(cluster_name: &str) -> Result<String> {
 /// different credentials. The staged file is linked into place instead, which
 /// fails rather than replaces when the name is already taken, so whoever loses
 /// the race reads the winner's token.
-fn create_k3s_token(path: &Path) -> Result<String> {
+pub(super) fn create_k3s_token(path: &Path) -> Result<String> {
     prepare_secret_parent(path)?;
     let token = random_token();
     let staged = stage_secret(path, &token)?;
     match fs::hard_link(&staged, path) {
         Ok(()) => {
+            let sync = sync_parent_dir(path);
             let _ = fs::remove_file(&staged);
+            sync?;
             Ok(token)
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -140,7 +149,26 @@ pub(super) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
         let _ = fs::remove_file(&staged);
         return Err(err).with_context(|| format!("failed to replace {}", path.display()));
     }
-    Ok(())
+    sync_parent_dir(path)
+}
+
+/// Flushes the directory entry a rename or link just created.
+///
+/// `sync_all` on the staged file persists its contents, not the name it was
+/// published under, so a crash could otherwise leave a bootstrapped cluster whose
+/// token this tool no longer has.
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let parent = match path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        Some(parent) => parent.to_path_buf(),
+        None => PathBuf::from("."),
+    };
+    let dir = fs::File::open(&parent)
+        .with_context(|| format!("failed to open {} to flush it", parent.display()))?;
+    dir.sync_all()
+        .with_context(|| format!("failed to flush {}", parent.display()))
 }
 
 fn prepare_secret_parent(path: &Path) -> Result<()> {
@@ -243,18 +271,6 @@ fn random_suffix() -> String {
         .take(16)
         .map(char::from)
         .collect()
-}
-
-/// Reads a file that must be a real file this tool wrote.
-///
-/// `fs::read_to_string` follows symlinks, so an entry swapped for a link to
-/// another readable file would have that file's contents adopted as the cluster
-/// token. Inspecting the path and then reading it would still leave a gap for the
-/// entry to be swapped in between, so the contents are read through one handle
-/// and that handle is confirmed to be the same object the no-follow inspection
-/// accepted.
-pub(super) fn read_regular_file(path: &Path) -> Result<String> {
-    Ok(open_regular_file(path)?.0)
 }
 
 fn open_regular_file(path: &Path) -> Result<(String, fs::File)> {

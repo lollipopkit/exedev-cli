@@ -143,7 +143,9 @@ pub(super) async fn remote_command_output(
     let wrapped_script = remote_status_script(vm, script);
     let args = remote_ssh_args(&targets.dest(vm));
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let output = capture_remote_ssh_output(&refs, &wrapped_script).await?;
+    let output = capture_remote_ssh_output(&refs, &wrapped_script)
+        .await
+        .with_context(|| format!("ssh to {vm} failed"))?;
     parse_remote_command_output(vm, output)
 }
 
@@ -185,6 +187,8 @@ pub(super) async fn run_command(program: &str, args: &[&str], stdout: Stdio) -> 
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::inherit())
+        // Cancelling this future must not leave the child behind.
+        .kill_on_drop(true)
         .status()
         .await
         .with_context(|| format!("failed to run {program}"))?;
@@ -356,7 +360,13 @@ pub(super) fn parse_remote_stdout(vm: &str, stdout: &str) -> Result<(String, i32
     let marker_start = stdout
         .rfind(REMOTE_EXIT_PREFIX)
         .with_context(|| format!("remote command on {vm} did not report an exit status"))?;
-    let command_stdout = stdout[..marker_start].trim_end_matches('\n').to_string();
+    // Exactly the newline the wrapper prints before the marker: trimming every
+    // trailing newline would rewrite the stdout of a command that ends in a blank
+    // line.
+    let command_stdout = stdout[..marker_start]
+        .strip_suffix('\n')
+        .unwrap_or(&stdout[..marker_start])
+        .to_string();
     let status_text = stdout[marker_start + REMOTE_EXIT_PREFIX.len()..]
         .lines()
         .next()

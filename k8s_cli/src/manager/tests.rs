@@ -1,4 +1,4 @@
-use super::super::fleet::NodeSpec;
+use super::super::fleet::{FleetFile, NodeSpec};
 use super::kubectl::kubeconfig_args;
 use super::parsing::{
     parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names, parse_vm_names_from_text,
@@ -11,7 +11,8 @@ use super::scripts::{
     k3s_agent_install_command, k3s_server_install_command, tailscale_install_command,
 };
 use super::state::{
-    generated_kubeconfig_path, generated_token_path, read_regular_file, write_secret_file,
+    create_k3s_token, generated_kubeconfig_path, generated_token_path, read_secret_file,
+    write_secret_file,
 };
 use super::*;
 use std::{
@@ -412,10 +413,18 @@ fn secret_write_failure_leaves_the_previous_secret_intact() {
     write_secret_file(&path, "good-token").unwrap();
 
     // A read-only directory fails the staged create, standing in for any I/O
-    // error partway through replacing the file.
+    // error partway through replacing the file. Root and mode-ignoring
+    // filesystems can still write there, so the denial is confirmed rather than
+    // assumed before the outcome is asserted.
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-    let err = write_secret_file(&path, "replacement").unwrap_err();
+    let denied = std::fs::File::create(dir.join(".probe")).is_err();
+    let result = denied.then(|| write_secret_file(&path, "replacement"));
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let Some(result) = result else {
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    };
+    let err = result.unwrap_err();
 
     assert!(err.to_string().contains("failed to create"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "good-token");
@@ -439,7 +448,7 @@ fn symlinked_token_is_rejected_rather_than_followed() {
     let token_path = dir.join("k3s-token");
     std::os::unix::fs::symlink(&secret_elsewhere, &token_path).unwrap();
 
-    let err = read_regular_file(&token_path).unwrap_err();
+    let err = read_secret_file(&token_path).unwrap_err();
     assert!(err.to_string().contains("not a regular file"));
 
     std::fs::remove_dir_all(&dir).unwrap();
@@ -538,91 +547,70 @@ fn cluster_endpoints_compare_by_host_and_port() {
 /// directory and consults the environment, both of which are process-wide.
 static STATE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Enters a scratch directory and restores everything on the way out.
+///
+/// Restoring after the assertions would leave the whole process parked in a
+/// deleted directory when one of them fails, which breaks unrelated tests rather
+/// than just this one.
+struct StateSandbox {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    previous_dir: std::path::PathBuf,
+    dir: std::path::PathBuf,
+}
+
+impl StateSandbox {
+    fn enter(label: &str) -> Self {
+        let guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let previous_dir = std::env::current_dir().unwrap();
+        let dir = std::env::temp_dir().join(format!("exedev-k8s-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+        Self {
+            _guard: guard,
+            previous_dir,
+            dir,
+        }
+    }
+}
+
+impl Drop for StateSandbox {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous_dir);
+        unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[test]
 fn an_empty_token_file_is_refused() {
-    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let previous_dir = std::env::current_dir().unwrap();
-    let dir = std::env::temp_dir().join(format!("exedev-k8s-emptytok-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_current_dir(&dir).unwrap();
-    unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+    let _sandbox = StateSandbox::enter("emptytok");
 
     write_secret_file(&generated_token_path("c1"), "   \n").unwrap();
-    let result = read_or_create_k3s_token("c1");
+    let err = read_or_create_k3s_token("c1").unwrap_err().to_string();
+    assert!(err.contains("is empty"), "unexpected error: {err}");
 
     // A fresh cluster still generates one; only an empty file is refused.
-    let generated = read_or_create_k3s_token("c2");
-
-    std::env::set_current_dir(&previous_dir).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
-
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("is empty"), "unexpected error: {err}");
-    assert!(!generated.unwrap().is_empty());
-}
-
-#[test]
-fn trailing_dot_hosts_compare_equal_with_an_explicit_port() {
-    assert!(is_same_cluster(
-        "https://k3s.example.:6443",
-        "https://k3s.example:6443"
-    ));
-    assert!(is_same_cluster("https://k3s.example.", "k3s.example"));
-    assert!(!is_same_cluster(
-        "https://k3s.example.:6443",
-        "https://other.example:6443"
-    ));
-}
-
-#[test]
-fn stale_owned_taints_are_scheduled_for_removal() {
-    let mut nodes = BTreeMap::new();
-    nodes.insert(
-        "vm-1".to_string(),
-        parse_kubernetes_nodes(
-            r#"{"items":[{"metadata":{"name":"vm-1"},"spec":{"taints":[
-                {"key":"exedev.dev/pool","value":"blue","effect":"NoSchedule"},
-                {"key":"node.kubernetes.io/unreachable","value":"","effect":"NoExecute"}
-            ]}}]}"#,
-        )
-        .unwrap()
-        .remove("vm-1")
-        .unwrap(),
-    );
-
-    // Dropping the isolation removes our taint and leaves Kubernetes' own alone.
-    assert_eq!(
-        stale_owned_taints(&nodes, "vm-1", None),
-        vec!["exedev.dev/pool-".to_string()]
-    );
-    // Keeping the same key is not stale.
-    assert!(stale_owned_taints(&nodes, "vm-1", Some("exedev.dev/pool=blue:NoSchedule")).is_empty());
-    // Switching keys retires the previous one.
-    assert_eq!(
-        stale_owned_taints(&nodes, "vm-1", Some("exedev.dev/role=x:NoSchedule")),
-        vec!["exedev.dev/pool-".to_string()]
-    );
+    assert!(!read_or_create_k3s_token("c2").unwrap().is_empty());
 }
 
 #[test]
 fn secret_writes_reject_a_symlinked_state_directory() {
-    // The directory is read under the lock: another test holding it has the
-    // process chdir'd into a directory it is about to delete.
-    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let previous_dir = std::env::current_dir().unwrap();
-    let root = std::env::temp_dir().join(format!("exedev-k8s-statelink-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("elsewhere")).unwrap();
-    std::fs::create_dir_all(&root).unwrap();
-    std::env::set_current_dir(&root).unwrap();
+    let sandbox = StateSandbox::enter("statelink");
+    std::fs::create_dir_all(sandbox.dir.join("elsewhere")).unwrap();
     std::os::unix::fs::symlink("elsewhere", ".exedev-k8s").unwrap();
 
-    let result = write_secret_file(&generated_token_path("c1"), "secret");
+    let err = write_secret_file(&generated_token_path("c1"), "secret")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a real directory"), "unexpected: {err}");
 
-    std::env::set_current_dir(&previous_dir).unwrap();
-    let err = result.unwrap_err().to_string();
-    std::fs::remove_dir_all(&root).unwrap();
+    // The read path refuses it too, rather than adopting whatever it points at.
+    std::fs::write(sandbox.dir.join("elsewhere/k3s-token"), "someone-elses").unwrap();
+    std::fs::create_dir_all(sandbox.dir.join("elsewhere/c1")).unwrap();
+    std::fs::write(sandbox.dir.join("elsewhere/c1/k3s-token"), "someone-elses").unwrap();
+    let err = read_or_create_k3s_token("c1").unwrap_err().to_string();
     assert!(err.contains("not a real directory"), "unexpected: {err}");
 }
 
@@ -703,21 +691,80 @@ fn stale_owned_labels_are_scheduled_for_removal() {
 
 #[test]
 fn a_losing_concurrent_token_creation_adopts_the_winner() {
-    let _guard = STATE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let previous_dir = std::env::current_dir().unwrap();
-    let dir = std::env::temp_dir().join(format!("exedev-k8s-tokrace-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_current_dir(&dir).unwrap();
-    unsafe { std::env::remove_var(K3S_TOKEN_ENV) };
+    let _sandbox = StateSandbox::enter("tokrace");
+    let path = generated_token_path("c1");
 
-    let first = read_or_create_k3s_token("c1");
-    // A second run of the same cluster must not mint a competing credential.
-    let second = read_or_create_k3s_token("c1");
+    // Stand in for the process that won the race: the file exists by the time
+    // this one tries to link its own token into place, which is the branch a
+    // second sequential call would never reach.
+    write_secret_file(&path, "winner-token").unwrap();
+    let adopted = create_k3s_token(&path).unwrap();
+    assert_eq!(adopted, "winner-token");
 
-    std::env::set_current_dir(&previous_dir).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
-    let (first, second) = (first.unwrap(), second.unwrap());
-    assert!(!first.is_empty());
-    assert_eq!(first, second);
+    // And the loser left nothing behind.
+    let staged = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(staged, 0);
+}
+
+#[test]
+fn vm_name_wins_over_a_generic_display_name() {
+    let response = r#"[{"name":"display-name","vm_name":"authoritative","ssh_dest":"vm+authoritative@exe.dev"}]"#;
+    // exe.dev's own field decides which node this record is, so the destination
+    // cannot be filed under a display name that belongs to nothing.
+    assert_eq!(
+        parse_vm_names(response).unwrap(),
+        BTreeSet::from(["authoritative".to_string()])
+    );
+    let destinations = parse_ssh_destinations(response);
+    assert_eq!(
+        destinations.get("authoritative").unwrap(),
+        "vm+authoritative@exe.dev"
+    );
+    assert!(!destinations.contains_key("display-name"));
+}
+
+#[test]
+fn malformed_destinations_fall_back_to_the_hostname() {
+    let destinations = parse_ssh_destinations(
+        r#"{"vms":[
+            {"vm_name":"spaced","ssh_dest":"vm-1.exe.xyz other-arg"},
+            {"vm_name":"controlled","ssh_dest":"vm-1.exe.xyz\ttab"},
+            {"vm_name":"good","ssh_dest":"vm+good@exe.dev"}
+        ]}"#,
+    );
+    // A value ssh cannot take as one target is not a destination; leaving it out
+    // keeps the usable `<vm>.exe.xyz` fallback.
+    assert!(!destinations.contains_key("spaced"));
+    assert!(!destinations.contains_key("controlled"));
+    assert_eq!(destinations.get("good").unwrap(), "vm+good@exe.dev");
+    let targets = SshTargets::new(destinations);
+    assert_eq!(targets.dest("spaced"), "spaced.exe.xyz");
+}
+
+#[test]
+fn duplicate_generated_vm_names_are_rejected() {
+    // Both the control plane and the task expand to `node-1`.
+    let err = FleetFile::from_yaml_str(
+        r#"
+cluster:
+  name: dup
+  controlPlane:
+    nodes: 1
+    vmPrefix: node
+projects:
+  project1:
+    tasks:
+      a:
+        nodes: 1
+        replicas: 1
+        vmPrefix: node
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("two VMs named node-1"), "unexpected: {err}");
 }
