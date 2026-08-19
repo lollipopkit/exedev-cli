@@ -551,6 +551,12 @@ fn cluster_endpoints_compare_by_host_and_port() {
         "https://100.64.0.1:6443",
         "https://100.64.0.1:7443"
     ));
+    // One trailing dot is the DNS root label, and splitting the port off first
+    // is what keeps it recognizable as one.
+    assert!(same_cluster_endpoint(
+        "https://k3s.example.:6443",
+        "https://k3s.example:6443"
+    ));
 }
 
 /// `read_or_create_k3s_token` resolves its path relative to the working
@@ -1000,7 +1006,47 @@ projects:
     assert!(name.contains("is not a DNS label"), "{name}");
     assert!(name.contains("Web-1"), "{name}");
 
+    // `control-plane` is the pool to_plan gives the control-plane node, so a
+    // worker pool taking it would answer a nodeSelector meant for that node.
+    let reserved = FleetFile::plan_from_yaml_str(&fleet("control", "plane", "w"))
+        .unwrap_err()
+        .to_string();
+    assert!(reserved.contains("control-plane node"), "{reserved}");
+
+    let spare = FleetFile::plan_from_yaml_str(
+        r#"
+cluster:
+  name: c
+  controlPlane:
+    nodes: 1
+    vmPrefix: ctl
+sparePools:
+  control-plane:
+    nodes: 1
+    vmPrefix: spare
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(spare.contains("control-plane node"), "{spare}");
+
     assert!(FleetFile::plan_from_yaml_str(&fleet("p1", "a", "w")).is_ok());
+}
+
+#[test]
+fn state_directories_are_not_readable_by_others() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _sandbox = StateSandbox::enter("statemode");
+    let token = generated_token_path("c1");
+    write_secret_file(&token, "secret").unwrap();
+
+    // Both the state directory and the cluster directory below it: these hold
+    // the cluster token and kubeconfig, and nothing else needs to list them.
+    for dir in [Path::new(".exedev-k8s"), token.parent().unwrap()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{} mode", dir.display());
+    }
 }
 
 #[test]

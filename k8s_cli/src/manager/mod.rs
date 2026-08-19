@@ -104,11 +104,11 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     // Re-read the VM list, then let the creation responses win: provisioning is
     // asynchronous, so a VM made moments ago may not carry a destination in `ls`
     // yet, and falling back to the hostname is what the destination map exists to
-    // avoid. Only when something was created; otherwise the first listing is
-    // already current and a second /exec call would add nothing.
-    if !created.is_empty() {
+    // avoid. Only when a VM was created; otherwise the first listing is already
+    // current and a second /exec call would add nothing.
+    if !created.names.is_empty() {
         inventory = fetch_inventory(endpoint).await?;
-        inventory.ssh_targets.extend(created);
+        inventory.ssh_targets.extend(created.ssh_targets);
     }
     let new_cluster_access = bootstrap_k3s(
         &plan,
@@ -348,14 +348,26 @@ async fn print_kubernetes_status(plan: &FleetPlan, kubeconfig: Option<&Path>) ->
     Ok(())
 }
 
+/// The VMs a bootstrap made, and the SSH destinations their creation responses
+/// reported.
+///
+/// The names are tracked separately because a response need not carry a
+/// destination: keying "was anything created" off the destinations alone would
+/// skip the refresh for exactly the VMs that need it.
+#[derive(Debug, Default)]
+struct CreatedVms {
+    names: BTreeSet<String>,
+    ssh_targets: BTreeMap<String, String>,
+}
+
 async fn create_missing_vms(
     client: &ExeDevClient,
     plan: &FleetPlan,
     include_control_plane: bool,
     inventory: &VmInventory,
     fleet_path: &Path,
-) -> Result<BTreeMap<String, String>> {
-    let mut created = BTreeMap::new();
+) -> Result<CreatedVms> {
+    let mut created = CreatedVms::default();
     for node in plan.bootstrap_nodes(include_control_plane) {
         if inventory.names.contains(&node.name) {
             continue;
@@ -366,7 +378,12 @@ async fn create_missing_vms(
             // The response describes the VM that was just made. Taking its
             // destination from here does not depend on the next `ls` having caught
             // up with provisioning.
-            Ok(response) => created.extend(parse_ssh_destinations(&response)),
+            Ok(response) => {
+                created.names.insert(node.name.clone());
+                created
+                    .ssh_targets
+                    .extend(parse_ssh_destinations(&response));
+            }
             Err(err) => {
                 if is_vm_name_unavailable_error(&err, &node.name) {
                     println!(

@@ -4,7 +4,7 @@ use rand::{RngExt, distr::Alphanumeric};
 use std::{
     env, fs,
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 
@@ -235,15 +235,25 @@ fn prepare_secret_parent(path: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     // Secrets are written by name inside this directory, so a symlinked component
     // would place them wherever it points. Only the directories this tool creates
     // are checked; a caller-supplied --kubeconfig path is the caller's own choice
-    // of destination.
-    if parent.starts_with(STATE_DIR) {
-        ensure_real_directories(parent)?;
+    // of destination, including its permissions.
+    if !parent.starts_with(STATE_DIR) {
+        return fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()));
     }
-    Ok(())
+    // 0700 rather than whatever the umask allows: every directory under the state
+    // directory exists to hold the cluster token and kubeconfig, and the 0600 on
+    // those files is the only thing keeping them private today. The mode applies
+    // to the directories this creates, `.exedev-k8s` included; one that is
+    // already there is the operator's to set.
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .with_context(|| format!("failed to create {}", parent.display()))?;
+    ensure_real_directories(parent)
 }
 
 /// Writes `contents` to a fresh 0600 file beside `path` and returns its path.

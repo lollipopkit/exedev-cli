@@ -167,6 +167,10 @@ fn task_pool_name(project_name: &str, task_name: &str) -> String {
     format!("{project_name}-{task_name}")
 }
 
+/// The pool `to_plan` gives the control-plane node, and therefore a value no
+/// other pool may take.
+const CONTROL_PLANE_POOL: &str = "control-plane";
+
 /// Whether a generated name can be an exe.dev VM name.
 ///
 /// The same string is the VM name, the `--node-name` k3s registers, and the row
@@ -297,6 +301,11 @@ impl FleetFile {
                         "projects.{project_name}.tasks.{task_name} produces the pool name {pool}, which is not a valid Kubernetes label value for exedev.dev/pool"
                     );
                 }
+                if pool == CONTROL_PLANE_POOL {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} produces the pool name {pool}, which exedev-k8s gives the control-plane node; a workload selecting that pool would schedule onto these workers"
+                    );
+                }
             }
         }
         for (pool_name, pool) in &self.spare_pools {
@@ -312,6 +321,11 @@ impl FleetFile {
             if !is_label_value(pool_name) {
                 bail!(
                     "sparePools.{pool_name} is not a valid Kubernetes label value; it becomes exedev.dev/pool on every node of this pool"
+                );
+            }
+            if pool_name == CONTROL_PLANE_POOL {
+                bail!(
+                    "sparePools.{pool_name} is the pool exedev-k8s gives the control-plane node; a workload selecting that pool would schedule onto these spares"
                 );
             }
         }
@@ -366,12 +380,12 @@ impl FleetFile {
         let mut nodes = Vec::new();
         let default_image = self.default_image();
         let mut control_labels = BTreeMap::new();
-        control_labels.insert("exedev.dev/role".into(), "control-plane".into());
-        control_labels.insert("exedev.dev/pool".into(), "control-plane".into());
+        control_labels.insert("exedev.dev/role".into(), CONTROL_PLANE_POOL.into());
+        control_labels.insert("exedev.dev/pool".into(), CONTROL_PLANE_POOL.into());
         nodes.push(NodeSpec {
             name: format!("{}-1", self.cluster.control_plane.vm_prefix),
             role: NodeRole::ControlPlane,
-            pool: "control-plane".into(),
+            pool: CONTROL_PLANE_POOL.into(),
             image: self
                 .cluster
                 .control_plane
