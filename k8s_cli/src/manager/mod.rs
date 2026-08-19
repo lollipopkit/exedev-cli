@@ -13,7 +13,7 @@ use exedev_core::{
     shell,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream},
     path::{Path, PathBuf},
@@ -33,14 +33,15 @@ use kubectl::{
     KUBECTL_PROBE_REQUEST_TIMEOUT, kubectl_apply, kubectl_capture, kubectl_capture_with_timeout,
     kubectl_run_owned,
 };
-use parsing::{parse_kubernetes_nodes, parse_vm_names};
-use process::{ensure_tool, remote_capture, remote_run, verify_vm_access};
+use parsing::{KubernetesNode, parse_kubernetes_nodes, parse_ssh_destinations, parse_vm_names};
+use process::{SshTargets, ensure_tool, remote_capture, remote_run, verify_vm_access};
 use scripts::{
     k3s_agent_install_command, k3s_server_install_command, remote_bootstrap_script,
     remote_privileged_script, tailscale_install_command,
 };
 use state::{
-    generated_kubeconfig_path, generated_token_path, read_or_create_k3s_token, write_secret_file,
+    adopt_legacy_state_dir, generated_kubeconfig_path, generated_token_path,
+    read_or_create_k3s_token, write_secret_file,
 };
 
 const TS_AUTHKEY_ENV: &str = "TS_AUTHKEY";
@@ -50,6 +51,9 @@ const KUBERNETES_API_WAIT_ATTEMPTS: usize = 24;
 const KUBERNETES_NODE_WAIT_ATTEMPTS: usize = 30;
 const KUBERNETES_WAIT_DELAY: Duration = Duration::from_secs(5);
 const LOCAL_K8S_API_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+/// Labels and taints under this prefix are this tool's to reconcile, and a fleet
+/// file may not supply them.
+pub(crate) const NODE_LABEL_PREFIX: &str = "exedev.dev/";
 pub(crate) async fn run(cli: K8sCli) -> Result<()> {
     match cli.command {
         K8sCommands::Plan(cmd) => run_plan(&cli.endpoint, cmd).await,
@@ -73,21 +77,55 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     ensure_tool("kubectl").await?;
     let ts_authkey = require_env(TS_AUTHKEY_ENV)?;
     if cmd.mode == ClusterMode::Existing {
-        require_env(K3S_URL_ENV)?;
+        let k3s_url = require_env(K3S_URL_ENV)?;
         require_env(K3S_TOKEN_ENV)?;
+        // Before anything is created: a target that does not match leaves the
+        // fleet's VMs behind when the bootstrap aborts further down.
+        ensure_kubectl_targets_cluster(cmd.kubeconfig.as_deref(), &k3s_url).await?;
     }
     let include_control_plane = cmd.mode == ClusterMode::New;
-    let current = fetch_current_vms(endpoint).await?;
-    print_bootstrap_plan(&plan, cmd.mode, &current, cmd.manifests.as_deref());
+    // Once, here, rather than from the path accessors: adoption renames a
+    // directory, and doing that from what callers use as a path getter mutates
+    // the filesystem every time a path is computed.
+    adopt_legacy_state_dir(&plan.cluster_name);
+    let mut inventory = fetch_inventory(endpoint).await?;
+    print_bootstrap_plan(&plan, cmd.mode, &inventory.names, cmd.manifests.as_deref());
     confirm("Run this bootstrap plan?", yes)?;
 
     let client = exe_client(endpoint)?;
-    create_missing_vms(&client, &plan, include_control_plane, &current, &cmd.fleet).await?;
-    let new_cluster_access =
-        bootstrap_k3s(&plan, cmd.mode, &ts_authkey, cmd.kubeconfig.as_deref()).await?;
+    let created = create_missing_vms(
+        &client,
+        &plan,
+        include_control_plane,
+        &inventory,
+        &cmd.fleet,
+    )
+    .await?;
+    // Re-read the VM list, then let the creation responses win: provisioning is
+    // asynchronous, so a VM made moments ago may not carry a destination in `ls`
+    // yet, and falling back to the hostname is what the destination map exists to
+    // avoid. Only when a VM was created; otherwise the first listing is already
+    // current and a second /exec call would add nothing.
+    if !created.names.is_empty() {
+        inventory = fetch_inventory(endpoint).await?;
+        inventory.ssh_targets.extend(created.ssh_targets);
+    }
+    let new_cluster_access = bootstrap_k3s(
+        &plan,
+        cmd.mode,
+        &ts_authkey,
+        cmd.kubeconfig.as_deref(),
+        &inventory.ssh_targets,
+    )
+    .await?;
 
     let kubeconfig = kubeconfig_for_bootstrap(&plan, cmd.mode, cmd.kubeconfig.as_deref());
-    wait_for_kubernetes_api(kubeconfig.as_deref(), new_cluster_access.as_ref()).await?;
+    wait_for_kubernetes_api(
+        kubeconfig.as_deref(),
+        new_cluster_access.as_ref(),
+        &inventory.ssh_targets,
+    )
+    .await?;
     wait_for_kubernetes_nodes(&plan, include_control_plane, kubeconfig.as_deref()).await?;
     apply_node_metadata(&plan, include_control_plane, kubeconfig.as_deref()).await?;
     if let Some(manifests) = cmd.manifests {
@@ -112,10 +150,14 @@ async fn run_status(endpoint: &str, cmd: StatusCmd) -> Result<()> {
 
 async fn run_destroy(endpoint: &str, cmd: DestroyCmd) -> Result<()> {
     let plan = load_plan(&cmd.fleet)?;
-    let current = fetch_current_vms(endpoint).await?;
+    // The listing is only read when it is used to narrow the plan. `--all-planned`
+    // is the documented recovery for a fleet whose VMs exist but whose listing
+    // cannot be read, so requiring one here would refuse to delete the VMs in
+    // exactly the case the flag exists for, and keep billing them.
     let managed = if cmd.all_planned {
         plan.nodes.iter().collect::<Vec<_>>()
     } else {
+        let current = fetch_current_vms(endpoint).await?;
         plan.nodes
             .iter()
             .filter(|node| current.contains(&node.name))
@@ -141,19 +183,32 @@ async fn run_destroy(endpoint: &str, cmd: DestroyCmd) -> Result<()> {
 }
 
 fn load_plan(path: &Path) -> Result<FleetPlan> {
-    Ok(FleetFile::load(path)?.to_plan())
+    FleetFile::load_plan(path)
 }
 
 fn exe_client(endpoint: &str) -> Result<ExeDevClient> {
     let api_key = env::var(API_KEY_ENV)
         .with_context(|| format!("missing {API_KEY_ENV}; export an exe.dev HTTPS API key first"))?;
-    Ok(ExeDevClient::new(endpoint.to_string(), api_key))
+    ExeDevClient::new(endpoint.to_string(), api_key)
+}
+
+/// The exe.dev VMs this account can see, and how to reach each over SSH.
+struct VmInventory {
+    names: BTreeSet<String>,
+    ssh_targets: SshTargets,
+}
+
+async fn fetch_inventory(endpoint: &str) -> Result<VmInventory> {
+    let client = exe_client(endpoint)?;
+    let response = client.exec("ls").await?;
+    Ok(VmInventory {
+        names: parse_vm_names(&response).context("failed to parse exe.dev ls response")?,
+        ssh_targets: SshTargets::new(parse_ssh_destinations(&response)),
+    })
 }
 
 async fn fetch_current_vms(endpoint: &str) -> Result<BTreeSet<String>> {
-    let client = exe_client(endpoint)?;
-    let response = client.exec("ls").await?;
-    parse_vm_names(&response).context("failed to parse exe.dev ls response")
+    Ok(fetch_inventory(endpoint).await?.names)
 }
 
 fn print_bootstrap_plan(
@@ -254,10 +309,26 @@ async fn print_kubernetes_status(plan: &FleetPlan, kubeconfig: Option<&Path>) ->
             let labels_ok = expected
                 .labels
                 .iter()
-                .all(|(key, value)| actual.labels.get(key) == Some(value));
+                .all(|(key, value)| actual.labels.get(key) == Some(value))
+                // An owned label the plan dropped is drift too, so matching the
+                // desired ones is not on its own enough to report ok.
+                && actual
+                    .labels
+                    .keys()
+                    .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                    .all(|key| expected.labels.contains_key(key));
+            // A node the plan no longer isolates still counts as drift while it
+            // carries one of this tool's taints, so `None` cannot simply be `ok`.
+            let owned_taints = actual
+                .taints
+                .iter()
+                .filter(|taint| {
+                    taint_key(taint).is_some_and(|key| key.starts_with(NODE_LABEL_PREFIX))
+                })
+                .collect::<Vec<_>>();
             let taint_ok = match &expected.taint {
-                Some(taint) => actual.taints.contains(taint),
-                None => true,
+                Some(taint) => owned_taints == [taint],
+                None => owned_taints.is_empty(),
             };
             println!(
                 "  - {} ready={} labels={} taint={}",
@@ -277,38 +348,62 @@ async fn print_kubernetes_status(plan: &FleetPlan, kubeconfig: Option<&Path>) ->
     Ok(())
 }
 
+/// The VMs a bootstrap made, and the SSH destinations their creation responses
+/// reported.
+///
+/// The names are tracked separately because a response need not carry a
+/// destination: keying "was anything created" off the destinations alone would
+/// skip the refresh for exactly the VMs that need it.
+#[derive(Debug, Default)]
+struct CreatedVms {
+    names: BTreeSet<String>,
+    ssh_targets: BTreeMap<String, String>,
+}
+
 async fn create_missing_vms(
     client: &ExeDevClient,
     plan: &FleetPlan,
     include_control_plane: bool,
-    current: &BTreeSet<String>,
+    inventory: &VmInventory,
     fleet_path: &Path,
-) -> Result<()> {
+) -> Result<CreatedVms> {
+    let mut created = CreatedVms::default();
     for node in plan.bootstrap_nodes(include_control_plane) {
-        if current.contains(&node.name) {
+        if inventory.names.contains(&node.name) {
             continue;
         }
         let command = exe_new_command(node);
         println!("{} {command}", output::label("exe.dev:"));
-        if let Err(err) = client.exec(&command).await {
-            if is_vm_name_unavailable_error(&err, &node.name) {
-                println!(
-                    "{} VM name {} is not available; verifying SSH access before continuing",
-                    output::warn("exe.dev:"),
-                    output::vm(&node.name)
-                );
-                verify_vm_access(&node.name, fleet_path).await?;
-                println!(
-                    "{} verified SSH access to {}; continuing",
-                    output::success("exe.dev:"),
-                    output::vm(&node.name)
-                );
-                continue;
+        match client.exec(&command).await {
+            // The response describes the VM that was just made. Taking its
+            // destination from here does not depend on the next `ls` having caught
+            // up with provisioning.
+            Ok(response) => {
+                created.names.insert(node.name.clone());
+                created
+                    .ssh_targets
+                    .extend(parse_ssh_destinations(&response));
             }
-            return Err(err);
+            Err(err) => {
+                if is_vm_name_unavailable_error(&err, &node.name) {
+                    println!(
+                        "{} VM name {} is not available; verifying SSH access before continuing",
+                        output::warn("exe.dev:"),
+                        output::vm(&node.name)
+                    );
+                    verify_vm_access(&inventory.ssh_targets, &node.name, fleet_path).await?;
+                    println!(
+                        "{} verified SSH access to {}; continuing",
+                        output::success("exe.dev:"),
+                        output::vm(&node.name)
+                    );
+                    continue;
+                }
+                return Err(err);
+            }
         }
     }
-    Ok(())
+    Ok(created)
 }
 
 async fn bootstrap_k3s(
@@ -316,6 +411,7 @@ async fn bootstrap_k3s(
     mode: ClusterMode,
     ts_authkey: &str,
     kubeconfig_arg: Option<&Path>,
+    targets: &SshTargets,
 ) -> Result<Option<NewClusterAccess>> {
     match mode {
         ClusterMode::New => {
@@ -323,8 +419,9 @@ async fn bootstrap_k3s(
                 .control_plane()
                 .context("fleet has no control-plane node")?;
             let mut token = read_or_create_k3s_token(&plan.cluster_name)?;
-            install_tailscale(&control.name, ts_authkey).await?;
-            let control_ip = remote_capture(&control.name, "tailscale ip -4 | head -n1").await?;
+            install_tailscale(targets, &control.name, ts_authkey).await?;
+            let control_ip =
+                remote_capture(targets, &control.name, "tailscale ip -4 | head -n1").await?;
             let control_ip = control_ip.trim();
             if control_ip.is_empty() {
                 bail!("failed to detect Tailscale IPv4 for {}", control.name);
@@ -332,11 +429,11 @@ async fn bootstrap_k3s(
             let control_ip_addr = control_ip.parse::<Ipv4Addr>().with_context(|| {
                 format!("invalid Tailscale IPv4 for {}: {control_ip}", control.name)
             })?;
-            install_k3s_server(&control.name, &token, control_ip, control_ip).await?;
+            install_k3s_server(targets, &control.name, &token, control_ip, control_ip).await?;
             let k3s_url = format!("https://{control_ip}:6443");
-            token = fetch_k3s_node_token(&control.name).await?;
+            token = fetch_k3s_node_token(targets, &control.name).await?;
             write_secret_file(&generated_token_path(&plan.cluster_name), &token)?;
-            let kubeconfig = fetch_kubeconfig(&control.name, control_ip).await?;
+            let kubeconfig = fetch_kubeconfig(targets, &control.name, control_ip).await?;
             let kubeconfig_path = kubeconfig_arg
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| generated_kubeconfig_path(&plan.cluster_name));
@@ -352,9 +449,9 @@ async fn bootstrap_k3s(
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                install_tailscale(targets, &node.name, ts_authkey).await?;
+                let node_ip = fetch_tailscale_ip(targets, &node.name).await?;
+                install_k3s_agent(targets, &node.name, &k3s_url, &token, &node_ip).await?;
             }
             Ok(Some(NewClusterAccess {
                 control_name: control.name.clone(),
@@ -364,46 +461,130 @@ async fn bootstrap_k3s(
         ClusterMode::Existing => {
             let k3s_url = require_env(K3S_URL_ENV)?;
             let token = require_env(K3S_TOKEN_ENV)?;
-            if kubeconfig_arg.is_none() && env::var_os("KUBECONFIG").is_none() {
-                println!(
-                    "{} no --kubeconfig or KUBECONFIG set; kubectl will use its default config",
-                    output::warn("warning:")
-                );
-            }
+            // Already checked in run_bootstrap, before any VM was created.
             for node in plan
                 .nodes
                 .iter()
                 .filter(|node| node.role != NodeRole::ControlPlane)
             {
-                install_tailscale(&node.name, ts_authkey).await?;
-                let node_ip = fetch_tailscale_ip(&node.name).await?;
-                install_k3s_agent(&node.name, &k3s_url, &token, &node_ip).await?;
+                install_tailscale(targets, &node.name, ts_authkey).await?;
+                let node_ip = fetch_tailscale_ip(targets, &node.name).await?;
+                install_k3s_agent(targets, &node.name, &k3s_url, &token, &node_ip).await?;
             }
             Ok(None)
         }
     }
 }
 
-async fn install_tailscale(vm: &str, authkey: &str) -> Result<()> {
+/// Confirms the kubectl context serves the cluster the workers are joining.
+async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str) -> Result<()> {
+    let server = kubectl_capture(
+        kubeconfig,
+        &[
+            "config",
+            "view",
+            "--minify",
+            "-o",
+            "jsonpath={.clusters[0].cluster.server}",
+        ],
+    )
+    .await
+    .context("failed to read the kubectl context; pass --kubeconfig or set KUBECONFIG")?;
+    let server = server.trim();
+    if server.is_empty() {
+        bail!(
+            "kubectl has no cluster server configured; pass --kubeconfig or set KUBECONFIG so {K3S_URL_ENV} and kubectl agree"
+        );
+    }
+    // Reported on its own rather than as a mismatch: the agents take K3S_URL
+    // verbatim, so a value without a scheme is rejected on every worker after the
+    // VMs exist, and the comparison below cannot say that is what went wrong.
+    if !k3s_url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+    {
+        bail!(
+            "{K3S_URL_ENV} must be an https:// URL the k3s agents can use, for example https://100.64.0.1:6443; got {k3s_url}"
+        );
+    }
+    if !same_cluster_endpoint(server, k3s_url) {
+        bail!(
+            "kubectl points at {server} but {K3S_URL_ENV} is {k3s_url}; pass --kubeconfig for that cluster rather than labelling and deploying to another one"
+        );
+    }
+    Ok(())
+}
+
+/// Compares two Kubernetes API endpoints, so an explicit `:6443` and the same
+/// URL without it are still the same cluster.
+///
+/// The scheme is part of the identity: `http://host:6443` is not the HTTPS API
+/// endpoint that `https://host:6443` names, and treating them as equal would let
+/// a mistyped K3S_URL through the only check made before workers are joined. It
+/// is required rather than assumed, because a scheme-less K3S_URL reaches the
+/// agents as written and k3s rejects it there.
+fn same_cluster_endpoint(left: &str, right: &str) -> bool {
+    fn parts(url: &str) -> Option<(String, String, String)> {
+        let (scheme, rest) = url.split_once("://")?;
+        let scheme = scheme.to_ascii_lowercase();
+        if scheme != "https" {
+            return None;
+        }
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port))
+                if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) =>
+            {
+                (host, port)
+            }
+            _ => (authority, "6443"),
+        };
+        // One trailing dot is the DNS root label and is dropped after the port is
+        // split off; more than one is not a hostname at all.
+        let host = host.strip_suffix('.').unwrap_or(host);
+        if host.is_empty() || host.ends_with('.') {
+            return None;
+        }
+        Some((scheme, host.to_ascii_lowercase(), port.to_string()))
+    }
+    match (parts(left), parts(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+async fn install_tailscale(targets: &SshTargets, vm: &str, authkey: &str) -> Result<()> {
     let command = tailscale_install_command(authkey);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn install_k3s_server(vm: &str, token: &str, tls_san: &str, node_ip: &str) -> Result<()> {
+async fn install_k3s_server(
+    targets: &SshTargets,
+    vm: &str,
+    token: &str,
+    tls_san: &str,
+    node_ip: &str,
+) -> Result<()> {
     let command = k3s_server_install_command(vm, token, tls_san, node_ip);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn install_k3s_agent(vm: &str, k3s_url: &str, token: &str, node_ip: &str) -> Result<()> {
+async fn install_k3s_agent(
+    targets: &SshTargets,
+    vm: &str,
+    k3s_url: &str,
+    token: &str,
+    node_ip: &str,
+) -> Result<()> {
     let command = k3s_agent_install_command(vm, k3s_url, token, node_ip);
     let script = remote_bootstrap_script(&command);
-    remote_run(vm, &script).await
+    remote_run(targets, vm, &script).await
 }
 
-async fn fetch_tailscale_ip(vm: &str) -> Result<String> {
-    let ip = remote_capture(vm, "tailscale ip -4 | head -n1").await?;
+async fn fetch_tailscale_ip(targets: &SshTargets, vm: &str) -> Result<String> {
+    let ip = remote_capture(targets, vm, "tailscale ip -4 | head -n1").await?;
     let ip = ip.trim();
     if ip.is_empty() {
         bail!("failed to detect Tailscale IPv4 for {vm}");
@@ -413,9 +594,9 @@ async fn fetch_tailscale_ip(vm: &str) -> Result<String> {
     Ok(ip.to_string())
 }
 
-async fn fetch_kubeconfig(vm: &str, control_ip: &str) -> Result<String> {
+async fn fetch_kubeconfig(targets: &SshTargets, vm: &str, control_ip: &str) -> Result<String> {
     let script = remote_privileged_script("${SUDO} cat /etc/rancher/k3s/k3s.yaml");
-    let kubeconfig = remote_capture(vm, &script).await?;
+    let kubeconfig = remote_capture(targets, vm, &script).await?;
     Ok(kubeconfig
         .replace(
             "https://127.0.0.1:6443",
@@ -427,9 +608,9 @@ async fn fetch_kubeconfig(vm: &str, control_ip: &str) -> Result<String> {
         ))
 }
 
-async fn fetch_k3s_node_token(vm: &str) -> Result<String> {
+async fn fetch_k3s_node_token(targets: &SshTargets, vm: &str) -> Result<String> {
     let script = remote_privileged_script("${SUDO} cat /var/lib/rancher/k3s/server/node-token");
-    remote_capture(vm, &script)
+    remote_capture(targets, vm, &script)
         .await
         .map(|token| token.trim().to_string())
         .with_context(|| format!("failed to fetch k3s node token from {vm}"))
@@ -438,6 +619,7 @@ async fn fetch_k3s_node_token(vm: &str) -> Result<String> {
 async fn wait_for_kubernetes_api(
     kubeconfig: Option<&Path>,
     new_cluster_access: Option<&NewClusterAccess>,
+    targets: &SshTargets,
 ) -> Result<()> {
     println!(
         "{}",
@@ -466,7 +648,7 @@ async fn wait_for_kubernetes_api(
     }
     if let Some(access) = new_cluster_access {
         let local_detail = local_kubernetes_api_detail(access.control_ip);
-        let remote_detail = diagnose_control_plane(&access.control_name)
+        let remote_detail = diagnose_control_plane(targets, &access.control_name)
             .await
             .unwrap_or_else(|err| format!("failed to collect remote diagnostics: {err}"));
         bail!(
@@ -492,7 +674,7 @@ fn tailscale_policy_hint() -> &'static str {
     "Tailscale policy hint: ensure workers can reach the control-plane on tcp:6443, for example tag:server -> tag:server tcp:6443, and ensure your local kubectl client can reach the control-plane on tcp:6443."
 }
 
-async fn diagnose_control_plane(control_name: &str) -> Result<String> {
+async fn diagnose_control_plane(targets: &SshTargets, control_name: &str) -> Result<String> {
     let script = remote_privileged_script(
         r#"
 echo "k3s readyz from control-plane:"
@@ -518,7 +700,7 @@ tailscale ip -4 2>&1 || true
 tailscale status --self 2>&1 || true
 "#,
     );
-    remote_capture(control_name, &script).await
+    remote_capture(targets, control_name, &script).await
 }
 
 async fn wait_for_kubernetes_nodes(
@@ -544,29 +726,57 @@ async fn wait_for_kubernetes_nodes(
         )
         .await
         {
-            Ok(output) => {
-                let nodes = parse_kubernetes_nodes(&output)?;
-                let missing = expected
-                    .iter()
-                    .filter(|name| !nodes.contains_key(*name))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if missing.is_empty() {
-                    return Ok(());
+            // A probe that returns unparseable JSON is treated like any other
+            // failed probe: kubectl can answer mid-rollout with something this
+            // cannot read, and giving up on the first one would spend none of the
+            // retry window and report a parse error instead of the cluster state.
+            // Recording the error and falling through to the shared tail is what
+            // keeps that from needing a copy of the retry policy.
+            Ok(output) => match parse_kubernetes_nodes(&output) {
+                Ok(nodes) => {
+                    let missing = expected
+                        .iter()
+                        .filter(|name| !nodes.contains_key(*name))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    // k3s registers a node before it can run anything, so
+                    // registration alone is not enough: the labels, taints, and
+                    // manifests applied right after this call need nodes that are
+                    // actually Ready.
+                    let unready = expected
+                        .iter()
+                        .filter(|name| nodes.get(*name).is_some_and(|node| !node.ready))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if missing.is_empty() && unready.is_empty() {
+                        return Ok(());
+                    }
+                    last_error = [
+                        (!missing.is_empty()).then(|| format!("missing: {}", missing.join(", "))),
+                        (!unready.is_empty()).then(|| format!("not ready: {}", unready.join(", "))),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 }
-                last_error = format!("missing nodes: {}", missing.join(", "));
-            }
+                Err(err) => last_error = err.to_string(),
+            },
             Err(err) => last_error = err.to_string(),
         }
         if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
-            println!(
-                "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
-                output::warn("waiting:")
-            );
+            report_node_wait(attempt, &last_error);
             sleep(KUBERNETES_WAIT_DELAY).await;
         }
     }
-    bail!("Kubernetes nodes did not register: {last_error}");
+    bail!("Kubernetes nodes did not become ready: {last_error}");
+}
+
+fn report_node_wait(attempt: usize, last_error: &str) {
+    println!(
+        "{} Kubernetes nodes are not ready yet ({last_error}); retrying ({attempt}/{KUBERNETES_NODE_WAIT_ATTEMPTS})",
+        output::warn("waiting:")
+    );
 }
 
 async fn apply_node_metadata(
@@ -574,6 +784,13 @@ async fn apply_node_metadata(
     include_control_plane: bool,
     kubeconfig: Option<&Path>,
 ) -> Result<()> {
+    // Not defaulted to empty: without the current nodes the stale labels and
+    // taints below cannot be found, and reporting success would claim a
+    // reconciliation that did not happen.
+    let actual = kubectl_capture(kubeconfig, &["get", "nodes", "-o", "json"])
+        .await
+        .and_then(|output| parse_kubernetes_nodes(&output))
+        .context("failed to read current node labels and taints")?;
     for node in plan.bootstrap_nodes(include_control_plane) {
         let mut label_args = vec!["label".into(), "node".into(), node.name.clone()];
         label_args.extend(
@@ -581,8 +798,23 @@ async fn apply_node_metadata(
                 .iter()
                 .map(|(key, value)| format!("{key}={value}")),
         );
+        // Removing a label the plan dropped uses the same `key-` form as taints;
+        // sending only the current key=value pairs would leave the old ones on
+        // the node while status reported the desired ones as present.
+        label_args.extend(stale_owned_labels(&actual, &node.name, &node.labels));
         label_args.push("--overwrite".into());
         kubectl_run_owned(kubeconfig, label_args).await?;
+
+        // Removals first: a pool changed to unisolated would otherwise keep its old
+        // NoSchedule, and a key kept with a different effect would end up carrying
+        // both, since `key-` clears every effect for that key.
+        for stale in stale_owned_taints(&actual, &node.name, node.taint.as_deref()) {
+            kubectl_run_owned(
+                kubeconfig,
+                vec!["taint".into(), "node".into(), node.name.clone(), stale],
+            )
+            .await?;
+        }
 
         if let Some(taint) = &node.taint {
             kubectl_run_owned(
@@ -599,6 +831,58 @@ async fn apply_node_metadata(
         }
     }
     Ok(())
+}
+
+/// Label removal arguments (`key-`) for this tool's labels that the plan dropped.
+fn stale_owned_labels(
+    nodes: &BTreeMap<String, KubernetesNode>,
+    name: &str,
+    desired: &BTreeMap<String, String>,
+) -> Vec<String> {
+    nodes
+        .get(name)
+        .map(|node| {
+            node.labels
+                .keys()
+                .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                .filter(|key| !desired.contains_key(*key))
+                .map(|key| format!("{key}-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Taint removal arguments (`key-`) for this tool's taints that the plan dropped.
+///
+/// Ownership is the `exedev.dev/` prefix, so taints set by anything else are left
+/// alone.
+fn stale_owned_taints(
+    nodes: &BTreeMap<String, KubernetesNode>,
+    name: &str,
+    desired: Option<&str>,
+) -> Vec<String> {
+    nodes
+        .get(name)
+        .map(|node| {
+            node.taints
+                .iter()
+                // Compared whole, not by key: the same key with another effect is
+                // a different taint, and leaving it would keep the node more
+                // restricted than the plan asks.
+                .filter(|taint| Some(taint.as_str()) != desired)
+                .filter_map(|taint| taint_key(taint))
+                .filter(|key| key.starts_with(NODE_LABEL_PREFIX))
+                .map(|key| format!("{key}-"))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn taint_key(taint: &str) -> Option<&str> {
+    let key = taint.split(['=', ':']).next()?;
+    (!key.is_empty()).then_some(key)
 }
 
 fn kubeconfig_for_bootstrap(
@@ -678,7 +962,18 @@ fn confirm(prompt: &str, yes: bool) -> Result<()> {
 }
 
 fn require_env(name: &str) -> Result<String> {
-    env::var(name).with_context(|| format!("missing {name}"))
+    let value = env::var(name).with_context(|| format!("missing {name}"))?;
+    // A present-but-empty variable would otherwise pass this check and reach the
+    // VM as `tailscale up --auth-key ''` or an empty k3s URL/token, failing only
+    // after the plan was confirmed and VMs were created.
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        bail!("{name} is set but empty");
+    }
+    // Trimmed, not just checked trimmed: a token or auth key that keeps a trailing
+    // newline reaches the VM inside quotes and is rejected there, while the same
+    // variable read through read_or_create_k3s_token is trimmed.
+    Ok(value)
 }
 
 fn mode_name(mode: ClusterMode) -> &'static str {

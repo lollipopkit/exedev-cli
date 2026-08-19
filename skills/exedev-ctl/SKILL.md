@@ -33,14 +33,16 @@ Check the current environment and scope before proposing changes:
 - Verify `EXE_DEV_API_KEY` is present for HTTPS `/exec` operations.
 - Use `exedev-ctl --json ls` to inspect current VMs.
 - Treat destructive VM actions as high risk. Require explicit confirmation before `rm`, bulk deletion, or operations that could lose disk state unless the user already asked for that exact action.
+- Know which commands prompt. The CLI asks for confirmation before deletions, access grants, credential creation, and spending; `references/exedev-ctl.md` lists them. `share add <vm> <target> --root` and `share access allow <vm>` give SSH, Terminal, and Shelley access rather than web-only, and `billing credits buy` spends money.
+- The prompt needs a terminal. In a non-interactive session a guarded command fails with `failed to read confirmation: IO error: not a terminal` before anything is sent to exe.dev. That is the guard, not a bug: confirm the exact action with the user, then rerun that one command with `--yes`. Do not add `--yes` pre-emptively to commands that do not need it.
 - When a token returns `403`, inspect token permissions before assuming a VM or CLI bug.
 - When `/exec` returns `422`, surface the exe.dev command failure body.
 
 ## Command Selection
 
-Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
+Use typed wrappers for supported commands: `help`, `doc`, `ls`, `new`, `rm`, `restart`, `rename`, `tag`, `comment`, `stat`, `cp`, `resize`, `share`, `domain`, `team`, `pool`, `invite`, `whoami`, `ssh-key`, `set-region`, `integrations`, `billing`, `shelley`, `browser`, `ssh`, and `grant-support-root`.
 
-Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper.
+Use `exec -- <command>` only for raw exe.dev commands that do not yet have a typed wrapper. `billing provider link` and `exe0-to-exe1` have no wrapper on purpose: both are one-time onboarding steps, and both take a token as an argument, which a wrapper would not make safer. Expanding a variable such as `"$TOKEN"` keeps the literal out of shell history, but the token still appears in local process arguments either way; say so rather than presenting `exec` or SSH as protection.
 
 Use `--json` when output must be parsed, compared, or included in automation.
 
@@ -54,7 +56,7 @@ The HTTPS endpoint has no stdin or pty, so these commands always use local SSH e
 - `exedev-ctl new --prompt /dev/stdin`
 - `exedev-ctl new --setup-script /dev/stdin`
 
-For streamed scripts or interactive VM work, prefer direct VM SSH such as `ssh <vm>.exe.xyz ...` when the repo evidence shows it is the reliable path.
+For streamed scripts or interactive VM work, prefer direct VM SSH when the repo evidence shows it is the reliable path. Take the destination from `ssh_dest` in `exedev-ctl --json ls`, with any username it carries; `<vm>.exe.xyz` is only the usual form and fails on VMs routed as `vm+<name>@exe.dev`.
 
 ## More Detail
 

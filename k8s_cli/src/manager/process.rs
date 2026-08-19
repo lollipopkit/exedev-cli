@@ -2,10 +2,10 @@ use crate::output;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use exedev_core::shell;
-use std::{path::Path, process::Stdio};
+use std::{collections::BTreeMap, path::Path, process::Stdio};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 
 const REMOTE_EXIT_PREFIX: &str = "__EXEDEV_K8S_EXIT__:";
 
@@ -13,7 +13,28 @@ const REMOTE_SSH_ATTEMPTS: usize = 5;
 
 const REMOTE_SSH_RETRY_DELAY: Duration = Duration::from_secs(3);
 
+/// Upper bound on a single remote step, covering the whole exchange rather than
+/// just the connect that `ConnectTimeout` bounds. Generous enough that the slowest
+/// real step (a k3s or Tailscale install on a cold VM) never reaches it, so hitting
+/// it means the remote side is stuck rather than slow.
+const REMOTE_SSH_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Upper bound on a captured local command. Every caller is a kubectl read whose
+/// own `--request-timeout` is at most 30s, so this only fires when kubectl itself
+/// is stuck rather than waiting on the API.
+const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Upper bound on a local command whose output is streamed through. Its callers
+/// are `kubectl apply`, `label`, and `taint`, which can spend minutes on a large
+/// manifest directory, so this is far above any real run and only bounds the
+/// hangs `--request-timeout` cannot: an exec credential plugin, a credential
+/// helper, or a wedged resolver that blocks before any request is made.
+const RUN_COMMAND_TIMEOUT: Duration = Duration::from_secs(900);
+
 const TAILNET_LOCK_AUTH_REQUIRED_STATUS: i32 = 126;
+
+/// Emitted by `CHECK_TAILNET_LOCK_SCRIPT` alongside its 126 exit.
+const TAILNET_LOCK_MARKER: &str = "Tailnet Lock is enabled and this VM is locked out";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct CommandOutput {
@@ -28,9 +49,33 @@ pub(super) struct RemoteCommandOutput {
     status: i32,
 }
 
-pub(super) async fn remote_run(vm: &str, script: &str) -> Result<()> {
+/// SSH destinations for fleet VMs, keyed by VM name.
+#[derive(Debug, Default)]
+pub(super) struct SshTargets(BTreeMap<String, String>);
+
+impl SshTargets {
+    pub(super) fn new(destinations: BTreeMap<String, String>) -> Self {
+        Self(destinations)
+    }
+
+    /// Adds destinations that take precedence over what is already known.
+    pub(super) fn extend(&mut self, destinations: BTreeMap<String, String>) {
+        self.0.extend(destinations);
+    }
+
+    /// The destination reported by exe.dev, or the `<vm>.exe.xyz` hostname when
+    /// exe.dev did not report one (for example a VM outside this account's `ls`).
+    pub(super) fn dest(&self, vm: &str) -> String {
+        self.0
+            .get(vm)
+            .cloned()
+            .unwrap_or_else(|| format!("{vm}.exe.xyz"))
+    }
+}
+
+pub(super) async fn remote_run(targets: &SshTargets, vm: &str, script: &str) -> Result<()> {
     loop {
-        let output = remote_command_output(vm, script).await?;
+        let output = remote_command_output(targets, vm, script).await?;
         if !output.stdout.is_empty() {
             print!("{}", output.stdout);
             if !output.stdout.ends_with('\n') {
@@ -46,7 +91,14 @@ pub(super) async fn remote_run(vm: &str, script: &str) -> Result<()> {
         if output.status == 0 {
             return Ok(());
         }
-        if output.status != TAILNET_LOCK_AUTH_REQUIRED_STATUS {
+        // 126 is also the conventional shell status for "found but not executable",
+        // so the status alone does not identify the Tailnet Lock case. Pairing it
+        // with the message the check emits keeps an unrelated 126 reported as the
+        // failure it is, rather than prompting for a signature and then rerunning
+        // a step that already changed state.
+        if output.status != TAILNET_LOCK_AUTH_REQUIRED_STATUS
+            || !output.stderr.contains(TAILNET_LOCK_MARKER)
+        {
             bail!(
                 "remote command on {vm} exited with status {}",
                 output.status
@@ -73,8 +125,8 @@ fn confirm_tailnet_lock_retry(vm: &str) -> Result<bool> {
         .context("failed to read Tailnet Lock confirmation")
 }
 
-pub(super) async fn remote_capture(vm: &str, script: &str) -> Result<String> {
-    let output = remote_command_output(vm, script).await?;
+pub(super) async fn remote_capture(targets: &SshTargets, vm: &str, script: &str) -> Result<String> {
+    let output = remote_command_output(targets, vm, script).await?;
     if output.status != 0 {
         let detail = [output.stdout.trim(), output.stderr.trim()]
             .into_iter()
@@ -95,16 +147,26 @@ pub(super) async fn remote_capture(vm: &str, script: &str) -> Result<String> {
     Ok(output.stdout)
 }
 
-pub(super) async fn remote_command_output(vm: &str, script: &str) -> Result<RemoteCommandOutput> {
+pub(super) async fn remote_command_output(
+    targets: &SshTargets,
+    vm: &str,
+    script: &str,
+) -> Result<RemoteCommandOutput> {
     let wrapped_script = remote_status_script(vm, script);
-    let args = remote_ssh_args(vm);
+    let args = remote_ssh_args(&targets.dest(vm));
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let output = capture_remote_ssh_output(&refs, &wrapped_script).await?;
+    let output = capture_remote_ssh_output(&refs, &wrapped_script)
+        .await
+        .with_context(|| format!("ssh to {vm} failed"))?;
     parse_remote_command_output(vm, output)
 }
 
-pub(super) async fn verify_vm_access(vm: &str, fleet_path: &Path) -> Result<()> {
-    remote_run(vm, "true").await.with_context(|| {
+pub(super) async fn verify_vm_access(
+    targets: &SshTargets,
+    vm: &str,
+    fleet_path: &Path,
+) -> Result<()> {
+    remote_run(targets, vm, "true").await.with_context(|| {
         format!(
             "VM name {vm} is unavailable but SSH access could not be verified; recover with `exedev-k8s destroy --fleet {} --all-planned`, or choose another vmPrefix",
             fleet_path.display()
@@ -132,14 +194,22 @@ pub(super) async fn run_command(program: &str, args: &[&str], stdout: Stdio) -> 
         "{}",
         output::command(format!("$ {}", display_command(program, args)))
     );
-    let status = TokioCommand::new(program)
+    let child = TokioCommand::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::inherit())
-        .status()
-        .await
-        .with_context(|| format!("failed to run {program}"))?;
+        // Cancelling this future, including by the timeout below, must not leave
+        // the child behind.
+        .kill_on_drop(true)
+        .status();
+    let status = match timeout(RUN_COMMAND_TIMEOUT, child).await {
+        Ok(result) => result.with_context(|| format!("failed to run {program}"))?,
+        Err(_) => bail!(
+            "{program} produced no result within {}s and was killed",
+            RUN_COMMAND_TIMEOUT.as_secs()
+        ),
+    };
     if !status.success() {
         bail!("{program} exited with status {status}");
     }
@@ -155,12 +225,23 @@ pub(super) async fn capture_command_output(program: &str, args: &[&str]) -> Resu
         "{}",
         output::command(format!("$ {}", display_command(program, args)))
     );
-    let output = TokioCommand::new(program)
+    let child = TokioCommand::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("failed to run {program}"))?;
+        // Dropped by the timeout below, which must take the process with it.
+        .kill_on_drop(true)
+        .output();
+    // `--request-timeout` bounds kubectl's API call, not kubectl itself: a
+    // kubeconfig exec plugin, a credential helper, or a wedged resolver can hang
+    // before any request is made, which would otherwise consume the whole polling
+    // window in one attempt and never reach the diagnostics.
+    let output = match timeout(CAPTURE_COMMAND_TIMEOUT, child).await {
+        Ok(result) => result.with_context(|| format!("failed to run {program}"))?,
+        Err(_) => bail!(
+            "{program} produced no result within {}s and was killed",
+            CAPTURE_COMMAND_TIMEOUT.as_secs()
+        ),
+    };
     if !output.status.success() {
         bail!(
             "{program} exited with status {}: {}",
@@ -193,20 +274,40 @@ pub(super) async fn capture_remote_ssh_output(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // The timed future below is dropped when it elapses, which must take the
+            // ssh process and its pipes with it rather than leaking both.
+            .kill_on_drop(true)
             .spawn()
             .context("failed to run ssh")?;
-        let write_result = if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(script.as_bytes())
+        // Both the script write and the wait are inside the timeout: a remote side
+        // that stops reading stdin blocks the write just as a hung script blocks
+        // the wait.
+        let attempt_result = timeout(REMOTE_SSH_TIMEOUT, async {
+            let write_result = if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(script.as_bytes())
+                    .await
+                    .map_err(anyhow::Error::from)
+            } else {
+                Ok(())
+            };
+            child
+                .wait_with_output()
                 .await
-                .map_err(anyhow::Error::from)
-        } else {
-            Ok(())
+                .context("failed to wait for ssh")
+                .map(|output| (write_result, output))
+        })
+        .await;
+        let (write_result, output) = match attempt_result {
+            Ok(result) => result?,
+            // Not retried: a step that stops responding is not the transient
+            // transport failure the 255 retry below exists for, and rerunning it
+            // would repeat whatever the remote side already did.
+            Err(_) => bail!(
+                "remote command on this VM produced no result within {}s and was killed; check the VM directly, then rerun exedev-k8s bootstrap",
+                REMOTE_SSH_TIMEOUT.as_secs()
+            ),
         };
-        let output = child
-            .wait_with_output()
-            .await
-            .context("failed to wait for ssh")?;
         if let Err(err) = write_result
             && output.status.success()
         {
@@ -221,7 +322,15 @@ pub(super) async fn capture_remote_ssh_output(
 
         last_status = Some(output.status);
         last_detail = command_output_detail(&output.stdout, &output.stderr);
-        if output.status.code() == Some(255) && attempt < REMOTE_SSH_ATTEMPTS {
+        // The wrapper prints the exit marker once the remote script has finished.
+        // Seeing it means ssh failed while returning output, not before running
+        // anything, so resending the script would repeat an install or a service
+        // change that already happened.
+        // Any stdout at all means the remote shell reached the script, whether or
+        // not the exit marker made it back, so resending would repeat whatever it
+        // had already done. Only an exchange that produced nothing is retried.
+        let remote_ran = !output.stdout.is_empty();
+        if output.status.code() == Some(255) && !remote_ran && attempt < REMOTE_SSH_ATTEMPTS {
             eprintln!(
                 "{}",
                 output::stderr_block(format!(
@@ -269,7 +378,13 @@ pub(super) fn parse_remote_stdout(vm: &str, stdout: &str) -> Result<(String, i32
     let marker_start = stdout
         .rfind(REMOTE_EXIT_PREFIX)
         .with_context(|| format!("remote command on {vm} did not report an exit status"))?;
-    let command_stdout = stdout[..marker_start].trim_end_matches('\n').to_string();
+    // Exactly the newline the wrapper prints before the marker: trimming every
+    // trailing newline would rewrite the stdout of a command that ends in a blank
+    // line.
+    let command_stdout = stdout[..marker_start]
+        .strip_suffix('\n')
+        .unwrap_or(&stdout[..marker_start])
+        .to_string();
     let status_text = stdout[marker_start + REMOTE_EXIT_PREFIX.len()..]
         .lines()
         .next()
@@ -295,7 +410,7 @@ pub(super) fn display_command(program: &str, args: &[&str]) -> String {
     redact_command_secrets(&shell::shell_join(&words))
 }
 
-pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
+pub(super) fn remote_ssh_args(dest: &str) -> Vec<String> {
     vec![
         "-o".into(),
         "ControlMaster=no".into(),
@@ -305,7 +420,12 @@ pub(super) fn remote_ssh_args(vm: &str) -> Vec<String> {
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
         "ConnectTimeout=15".into(),
-        format!("{vm}.exe.xyz"),
+        // The destination comes from the exe.dev API, and ssh parses options up to
+        // the first non-option word, so without this a reported destination
+        // starting with `-` would be read as a local ssh option such as
+        // `-oProxyCommand=...` instead of a host.
+        "--".into(),
+        dest.to_string(),
         "sh".into(),
         "-s".into(),
     ]

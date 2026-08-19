@@ -18,8 +18,69 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  resolve:
+    name: resolve release commit
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Resolved once, here, so every matrix build and the publish step agree on a
+      # single immutable commit. Resolving the tag independently per job would let a
+      # tag moved mid-run produce archives from more than one commit.
+      - name: Resolve the tag to a commit
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG_NAME}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          # Validated before it is used, not after: the tag goes into an API path
+          # below, where `../../owner/repo/git/ref/tags/v1` would traverse to
+          # another repository and resolve a SHA there. The push path only filters
+          # `v*`, so a pushed `v1.2` is also rejected here rather than in each
+          # matrix build, after four checkouts and toolchains.
+          scripts/release/check-version.sh "${tag}" > /dev/null
+          # Both paths resolve through the API, so the SHA pinned here is peeled
+          # the same way the verify and confirm jobs peel it. GITHUB_SHA can carry
+          # the tag object of an annotated tag, which those jobs would then report
+          # as a tag that moved.
+          # One read of the ref, then one of the tag object: asking twice can
+          # pair a SHA from before a tag move with a type from after it.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
+          # An annotated tag points at a tag object, not the commit it names,
+          # and a tag object can name another one. Bounded so a cycle cannot
+          # spin here.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
+          if [[ "${type}" != "commit" ]]; then
+            echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
   build:
     name: build ${{ matrix.platform }}
+    needs: resolve
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -41,17 +102,24 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
+          # The commit the resolve job pinned, never a ref name: a ref is resolved
+          # again at checkout time, so a tag moved between the trigger and this step
+          # would build a commit the release was never requested for.
+          ref: ${{ needs.resolve.outputs.sha }}
+          # This job runs no git operations after checkout, and the build compiles
+          # third-party crates, so leaving the token in .git/config would only widen
+          # what a compromised dependency can reach.
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}
 
@@ -72,21 +140,31 @@ jobs:
               ;;
           esac
 
+      # Must run before the build: clap bakes CARGO_PKG_VERSION in at compile time, so a
+      # binary built ahead of this step reports whatever the crates were last set to
+      # rather than the tag it ships under.
+      - name: Sync crate versions with release tag
+        shell: bash
+        env:
+          # Passed through the environment rather than interpolated into the script,
+          # so a crafted dispatch input cannot inject shell commands.
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          scripts/release/set-version.sh "${RELEASE_TAG}"
+
       - name: Build optimized release binaries
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p exedev-ctl -p exedev-k8s
 
       - name: Package release archive
         id: package
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag_name }}"
-          fi
-
-          archive="exedev-clis-${tag}-${{ matrix.platform }}.tar.gz"
+          archive="exedev-clis-${RELEASE_TAG}-${{ matrix.platform }}.tar.gz"
           mkdir -p package dist
 
           cp "target/${{ matrix.target }}/dist/exedev-ctl" "package/exedev-ctl"
@@ -102,41 +180,106 @@ jobs:
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload archive artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/${{ steps.package.outputs.archive }}
           if-no-files-found: error
 
+  # Separate from publish so the write-capable token is not in scope while this
+  # runs: the job that holds contents: write grants it to every one of its steps.
+  verify:
+    name: verify release commit
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+
+    steps:
+      # The archives were built from one commit; the release is about to be
+      # attached to a tag name. If the tag moved in between, publishing would ship
+      # binaries that do not match the source the tag now points at.
+      - name: Verify the tag still points at the built commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          BUILT_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Single read of the ref, as in resolve: two requests can pair a SHA
+          # from one side of a tag move with a type from the other.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
+          # Peeled the same way as resolve, including a tag naming another tag.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
+          if [[ "${sha}" != "${BUILT_SHA}" ]]; then
+            echo "tag ${RELEASE_TAG} now points at ${sha}, but these archives were built from ${BUILT_SHA}" >&2
+            exit 1
+          fi
+
   publish:
     name: publish release
-    needs: build
+    needs: [resolve, verify]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
       - name: Download release archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
 
-      - name: Resolve release tag
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag_name }}"
-          fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v3
+        # Pinned to a commit, not the mutable v3 tag: this is the only step that
+        # runs with contents: write, so retagging upstream would hand a new
+        # revision the ability to rewrite this repository's releases.
+        # softprops/action-gh-release v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
           files: dist/*.tar.gz
           generate_release_notes: true
+
+
+  # Its own job, and therefore its own read-only token: the release API attaches
+  # to a tag name, so a tag moved during publication cannot be refused at that
+  # instant. Failing afterwards turns what would be a silent mismatch between the
+  # release and its source into a red run.
+  confirm:
+    name: confirm published commit
+    needs: [resolve, publish]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Confirm the published tag is still the built commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          BUILT_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Single read of the ref, as in resolve: two requests can pair a SHA
+          # from one side of a tag move with a type from the other.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
+          # Peeled the same way as resolve, including a tag naming another tag.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
+          if [[ "${sha}" != "${BUILT_SHA}" ]]; then
+            echo "tag ${RELEASE_TAG} moved to ${sha} while publishing; the release does not match ${BUILT_SHA}" >&2
+            exit 1
+          fi

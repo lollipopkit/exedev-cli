@@ -1,6 +1,10 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 const DEFAULT_IMAGE: &str = "exeuntu";
 
@@ -118,17 +122,119 @@ pub(crate) struct FleetPlan {
     pub(crate) nodes: Vec<NodeSpec>,
 }
 
+/// The subset of the Kubernetes label grammar kubectl accepts on the command line.
+fn is_label_key(key: &str) -> bool {
+    let (prefix, name) = match key.split_once('/') {
+        Some((prefix, name)) => (Some(prefix), name),
+        None => (None, key),
+    };
+    if let Some(prefix) = prefix
+        && (prefix.is_empty() || prefix.len() > 253 || !is_dns_subdomain(prefix))
+    {
+        return false;
+    }
+    is_label_value(name) && !name.is_empty() && name.len() <= 63
+}
+
+fn is_dns_subdomain(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+fn is_label_value(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    value.len() <= 63
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+        && value.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+        && value.ends_with(|ch: char| ch.is_ascii_alphanumeric())
+}
+
+/// The `exedev.dev/pool` value a task expands to. Shared with `validate` so the
+/// value it checks is the one `to_plan` emits.
+fn task_pool_name(project_name: &str, task_name: &str) -> String {
+    format!("{project_name}-{task_name}")
+}
+
+/// The pool `to_plan` gives the control-plane node, and therefore a value no
+/// other pool may take.
+const CONTROL_PLANE_POOL: &str = "control-plane";
+
+/// Whether a generated name can be an exe.dev VM name.
+///
+/// The same string is the VM name, the `--node-name` k3s registers, and the row
+/// `parse_vm_names` reads back out of `exe.dev ls`, all of which are DNS labels.
+/// A name that is not one is dropped by that reader, so bootstrap concludes the
+/// VM does not exist and tries to create it again on every run.
+fn is_vm_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && name.ends_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+/// The labels `to_plan` sets itself. Other keys under the tool's prefix stay
+/// available to fleet files, which use them for their own bookkeeping.
+const GENERATED_LABEL_KEYS: [&str; 4] = [
+    "exedev.dev/role",
+    "exedev.dev/pool",
+    "exedev.dev/project",
+    "exedev.dev/task",
+];
+
 impl FleetFile {
-    pub(crate) fn load(path: &Path) -> Result<Self> {
+    /// Every label a fleet file supplies, with where it came from.
+    fn user_labels(&self) -> Vec<(String, &BTreeMap<String, String>)> {
+        let mut sources = Vec::new();
+        for (project_name, project) in &self.projects {
+            for (task_name, task) in &project.tasks {
+                sources.push((
+                    format!("projects.{project_name}.tasks.{task_name}"),
+                    &task.labels,
+                ));
+            }
+        }
+        for (pool_name, pool) in &self.spare_pools {
+            sources.push((format!("sparePools.{pool_name}"), &pool.labels));
+        }
+        sources
+    }
+}
+
+impl FleetFile {
+    pub(crate) fn load_plan(path: &Path) -> Result<FleetPlan> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read fleet file {}", path.display()))?;
-        let fleet = serde_yaml::from_str::<Self>(&text)
-            .with_context(|| format!("failed to parse fleet file {}", path.display()))?;
-        fleet.validate()?;
-        Ok(fleet)
+        Self::plan_from_yaml_str(&text)
+            .with_context(|| format!("failed to load fleet file {}", path.display()))
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(crate) fn plan_from_yaml_str(text: &str) -> Result<FleetPlan> {
+        serde_yaml::from_str::<Self>(text)
+            .context("failed to parse fleet file")?
+            .validate()
+    }
+
+    /// Checks the fleet file and returns the plan it expands to.
+    ///
+    /// The plan is handed back rather than left for the caller to rebuild: the
+    /// duplicate-name check below needs the expanded node set, and expanding it
+    /// a second time clones every node, label map, and tag list for nothing.
+    pub(crate) fn validate(&self) -> Result<FleetPlan> {
         if self.cluster.name.trim().is_empty() {
             bail!("cluster.name must not be empty");
         }
@@ -157,7 +263,21 @@ impl FleetFile {
         if self.cluster.control_plane.cpu == Some(0) {
             bail!("cluster.controlPlane.cpu must be greater than 0");
         }
+        // Pool, project, and task names become label values and the pool taint in
+        // `to_plan`, on the same terms as the user labels checked below: they
+        // reach `kubectl label` and `kubectl taint` only after every VM has been
+        // created and joined, so a name kubectl rejects has to fail here.
         for (project_name, project) in &self.projects {
+            // A project with no tasks expands to no node, so none of its names
+            // reach a label.
+            if project.tasks.is_empty() {
+                continue;
+            }
+            if !is_label_value(project_name) {
+                bail!(
+                    "projects.{project_name} is not a valid Kubernetes label value; it becomes exedev.dev/project on every node of this project"
+                );
+            }
             for (task_name, task) in &project.tasks {
                 if task.nodes == 0 {
                     bail!("projects.{project_name}.tasks.{task_name}.nodes must be greater than 0");
@@ -167,6 +287,24 @@ impl FleetFile {
                 }
                 if task.cpu == Some(0) {
                     bail!("projects.{project_name}.tasks.{task_name}.cpu must be greater than 0");
+                }
+                if !is_label_value(task_name) {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} is not a valid Kubernetes label value; it becomes exedev.dev/task on every node of this task"
+                    );
+                }
+                // Checked as a whole, not just per part: two valid names still
+                // join into a pool value that can exceed the 63-character limit.
+                let pool = task_pool_name(project_name, task_name);
+                if !is_label_value(&pool) {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} produces the pool name {pool}, which is not a valid Kubernetes label value for exedev.dev/pool"
+                    );
+                }
+                if pool == CONTROL_PLANE_POOL {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} produces the pool name {pool}, which exedev-k8s gives the control-plane node; a workload selecting that pool would schedule onto these workers"
+                    );
                 }
             }
         }
@@ -180,20 +318,74 @@ impl FleetFile {
             if pool.cpu == Some(0) {
                 bail!("sparePools.{pool_name}.cpu must be greater than 0");
             }
+            if !is_label_value(pool_name) {
+                bail!(
+                    "sparePools.{pool_name} is not a valid Kubernetes label value; it becomes exedev.dev/pool on every node of this pool"
+                );
+            }
+            if pool_name == CONTROL_PLANE_POOL {
+                bail!(
+                    "sparePools.{pool_name} is the pool exedev-k8s gives the control-plane node; a workload selecting that pool would schedule onto these spares"
+                );
+            }
         }
-        Ok(())
+        // Labels reach `kubectl label` untouched after the fleet is provisioned, so
+        // a bad key is otherwise discovered only once VMs exist and are
+        // bootstrapped. The tool's own prefix is reserved: a worker declaring
+        // `exedev.dev/role: control-plane` would be represented as one.
+        for (source, labels) in self.user_labels() {
+            for (key, value) in labels {
+                if GENERATED_LABEL_KEYS.contains(&key.as_str()) {
+                    bail!(
+                        "{source} sets {key}, which exedev-k8s generates; a worker declaring it could present itself as another role or pool"
+                    );
+                }
+                if !is_label_key(key) {
+                    bail!("{source} sets an invalid Kubernetes label key: {key}");
+                }
+                if !is_label_value(value) {
+                    bail!("{source} sets an invalid Kubernetes label value for {key}: {value}");
+                }
+            }
+        }
+
+        // Names are assembled from prefixes and indices, so two pools can produce
+        // the same one. Bootstrap keys every VM by name: a duplicate silently
+        // collapses two planned nodes into one and gives it whichever role and
+        // pool the plan visits last.
+        // Names come from `to_plan` rather than a second expansion here: a copy of
+        // the naming rules would eventually disagree with the plan it is meant to
+        // check.
+        let plan = self.to_plan();
+        let mut seen = BTreeSet::new();
+        for node in &plan.nodes {
+            if !is_vm_name(&node.name) {
+                bail!(
+                    "fleet produces the VM name {}, which is not a DNS label; give pool {} a vmPrefix of lowercase letters, digits, and dashes",
+                    node.name,
+                    node.pool
+                );
+            }
+            if !seen.insert(node.name.clone()) {
+                bail!(
+                    "fleet produces two VMs named {}; change a vmPrefix so every node has its own name",
+                    node.name
+                );
+            }
+        }
+        Ok(plan)
     }
 
-    pub(crate) fn to_plan(&self) -> FleetPlan {
+    fn to_plan(&self) -> FleetPlan {
         let mut nodes = Vec::new();
         let default_image = self.default_image();
         let mut control_labels = BTreeMap::new();
-        control_labels.insert("exedev.dev/role".into(), "control-plane".into());
-        control_labels.insert("exedev.dev/pool".into(), "control-plane".into());
+        control_labels.insert("exedev.dev/role".into(), CONTROL_PLANE_POOL.into());
+        control_labels.insert("exedev.dev/pool".into(), CONTROL_PLANE_POOL.into());
         nodes.push(NodeSpec {
             name: format!("{}-1", self.cluster.control_plane.vm_prefix),
             role: NodeRole::ControlPlane,
-            pool: "control-plane".into(),
+            pool: CONTROL_PLANE_POOL.into(),
             image: self
                 .cluster
                 .control_plane
@@ -209,7 +401,7 @@ impl FleetFile {
 
         for (project_name, project) in &self.projects {
             for (task_name, task) in &project.tasks {
-                let pool = format!("{project_name}-{task_name}");
+                let pool = task_pool_name(project_name, task_name);
                 for index in 1..=task.nodes {
                     let mut labels = task.labels.clone();
                     labels.insert("exedev.dev/project".into(), project_name.clone());

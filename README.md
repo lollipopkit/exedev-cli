@@ -44,8 +44,12 @@ exedev-ctl domain add p1-a-1 app.example.com
 exedev-ctl rm p1-a-1
 ```
 
-Dangerous operations such as `rm`, public share changes, and support-root grants
-ask for confirmation by default. Use `--yes` only in reviewed automation.
+Dangerous operations ask for confirmation by default: deletions (`rm`,
+`pool delete`, `domain rm`), access widening (public shares, share links,
+`share add --root`, `share access allow`, `team settings auto-join on`,
+support-root grants), and spending (`billing capacity`, `billing credits buy`).
+`--yes` is a global flag on both CLIs that skips these prompts; use it only in
+reviewed automation. `exedev-k8s destroy` always confirms, even with `--yes`.
 
 Detailed documentation:
 

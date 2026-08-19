@@ -45,7 +45,7 @@ async fn run_cli(cli: cli::Cli) -> Result<()> {
 
     let api_key = env::var(API_KEY_ENV)
         .with_context(|| format!("missing {API_KEY_ENV}; export an exe.dev HTTPS API key first"))?;
-    let response = ExeDevClient::new(cli.endpoint, api_key)
+    let response = ExeDevClient::new(cli.endpoint, api_key)?
         .exec(&command_string)
         .await?;
     output::print_response(&response, cli.json)?;

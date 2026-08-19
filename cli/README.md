@@ -159,10 +159,33 @@ These commands require local SSH access to exe.dev.
 The CLI covers the top-level commands from the exe.dev CLI Reference:
 
 ```text
-help doc ls new rm restart rename tag stat cp resize share domain team whoami
-ssh-key set-region integrations billing shelley browser ssh grant-support-root
-exit exec
+help doc ls new rm restart rename tag comment stat cp resize share domain team
+pool invite whoami ssh-key set-region integrations billing shelley browser ssh
+grant-support-root exit exec
 ```
 
 `exec` is the fallback command for future exe.dev commands that do not yet have
-a typed wrapper.
+a typed wrapper. Its arguments are sent as written: no flag is injected into
+them, so a command that prompts server-side (`team disable`,
+`billing credits buy`) needs its own `--yes` inside the raw command. The global
+`--yes` still skips this CLI's own confirmation prompt, and the global `--json`
+still applies, because it selects the output format rather than changing what
+the command does.
+
+`new --command` was removed: exe.dev no longer lists it among `new`'s options,
+so forwarding it only produced a server-side error. If your account still accepts
+it, `exedev-ctl exec -- new --command ...` sends it unchanged.
+
+Two documented commands are intentionally left to `exec`. Both are one-time
+onboarding steps with no automation value, and both take a token as a positional
+argument or flag value, which a typed wrapper would not make any safer:
+
+```sh
+exedev-ctl exec -- billing provider link aws --token="$MARKETPLACE_TOKEN"
+exedev-ctl exec -- exe0-to-exe1 "$TOKEN"
+```
+
+Expanding a variable keeps the token literal out of your shell history, but the
+expanded value still appears in the process arguments of the local `exedev-ctl`
+and `ssh` processes, where any local process running as your user can read it.
+exe.dev exposes no argument-free input path for these two commands.

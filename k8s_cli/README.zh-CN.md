@@ -201,8 +201,11 @@ kubectl --kubeconfig .exedev-k8s/exedev-test-minimal/kubeconfig get nodes -o wid
 `plan` 是 read-only。`bootstrap` 会打印 planned actions，并在没有传入 `--yes`
 时请求确认。`destroy` 始终需要确认，即使传入全局 `--yes`。
 
-`bootstrap` 会创建缺失 VMs，通过本地 `ssh exe.dev ssh <vm> ...` 安装 Tailscale
-和 k3s，用 `kubectl` 应用 labels/taints，并可选运行 `kubectl apply -f <dir>`。
+`bootstrap` 会创建缺失 VMs，通过直连 VM 的 SSH 安装 Tailscale 和 k3s，用
+`kubectl` 应用 labels/taints，并可选运行 `kubectl apply -f <dir>`。SSH
+destination 取自 exe.dev `ls` 返回的 `ssh_dest`，因此 hostname 无法直接路由 SSH
+的 VM 会使用 exe.dev 报告的带 username 前缀的 destination；`ls` 中不存在的 VM
+回退到 `<vm>.exe.xyz`。
 
 新 cluster 生成的 kubeconfig 和 k3s token 会保存到：
 

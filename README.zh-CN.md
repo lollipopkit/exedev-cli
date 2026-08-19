@@ -43,8 +43,12 @@ exedev-ctl domain add p1-a-1 app.example.com
 exedev-ctl rm p1-a-1
 ```
 
-`rm`、public share 变更、support-root grant 等危险操作默认需要确认。只有在
-automation 已经审阅过 action plan 后才使用 `--yes`。
+危险操作默认需要确认：删除（`rm`、`pool delete`、`domain rm`）、扩大访问权限
+（public share、share link、`share add --root`、`share access allow`、
+`team settings auto-join on`、support-root grant）、以及花钱（`billing capacity`、
+`billing credits buy`）。`--yes` 是两个 CLI 的 global flag，用于跳过这些确认，
+只有在 automation 已经审阅过 action plan 后才使用。`exedev-k8s destroy` 始终需要
+确认，即使传入 `--yes`。
 
 详细文档：
 

@@ -139,6 +139,11 @@ List VMs:
 ssh exe.dev ls --json
 ```
 
+Each VM object carries `ssh_dest`, the destination to use for `ssh` and `scp`.
+It is usually `<vm_name>.exe.xyz`, but it may carry a username prefix such as
+`vm+p1-a-1@exe.dev`, so bootstrap flows read it instead of building the
+hostname themselves.
+
 Create a VM:
 
 ```sh

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
 use thiserror::Error;
 
@@ -29,15 +29,33 @@ pub struct ExeDevClient {
 }
 
 impl ExeDevClient {
-    pub fn new(endpoint: String, token: String) -> Self {
-        Self {
+    pub fn new(endpoint: String, token: String) -> Result<Self> {
+        // Redirects are not followed: the endpoint is checked for https once, and
+        // a 307 from there would otherwise resend the command, and the bearer
+        // token on a same-host hop, to somewhere never validated. A build failure
+        // is reported rather than silently swapped for a client that does follow
+        // them.
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to build the exe.dev HTTPS client")?;
+        Ok(Self {
             endpoint,
             token,
-            http: reqwest::Client::new(),
-        }
+            http,
+        })
     }
 
     pub async fn exec(&self, command: &str) -> Result<String> {
+        // Every request carries the API key as a bearer token, so the endpoint has
+        // to be HTTPS: `--endpoint http://elsewhere/collect` would otherwise send
+        // the key and the command in the clear to whatever the caller named.
+        if !self.endpoint.to_ascii_lowercase().starts_with("https://") {
+            bail!(
+                "endpoint must be an https:// URL to carry the API key, got {}",
+                self.endpoint
+            );
+        }
         let response = self
             .http
             .post(&self.endpoint)
