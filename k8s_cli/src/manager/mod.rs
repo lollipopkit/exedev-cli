@@ -40,7 +40,8 @@ use scripts::{
     remote_privileged_script, tailscale_install_command,
 };
 use state::{
-    generated_kubeconfig_path, generated_token_path, read_or_create_k3s_token, write_secret_file,
+    adopt_legacy_state_dir, generated_kubeconfig_path, generated_token_path,
+    read_or_create_k3s_token, write_secret_file,
 };
 
 const TS_AUTHKEY_ENV: &str = "TS_AUTHKEY";
@@ -83,7 +84,11 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
         ensure_kubectl_targets_cluster(cmd.kubeconfig.as_deref(), &k3s_url).await?;
     }
     let include_control_plane = cmd.mode == ClusterMode::New;
-    let inventory = fetch_inventory(endpoint).await?;
+    // Once, here, rather than from the path accessors: adoption renames a
+    // directory, and doing that from what callers use as a path getter mutates
+    // the filesystem every time a path is computed.
+    adopt_legacy_state_dir(&plan.cluster_name);
+    let mut inventory = fetch_inventory(endpoint).await?;
     print_bootstrap_plan(&plan, cmd.mode, &inventory.names, cmd.manifests.as_deref());
     confirm("Run this bootstrap plan?", yes)?;
 
@@ -99,9 +104,12 @@ async fn run_bootstrap(endpoint: &str, yes: bool, cmd: BootstrapCmd) -> Result<(
     // Re-read the VM list, then let the creation responses win: provisioning is
     // asynchronous, so a VM made moments ago may not carry a destination in `ls`
     // yet, and falling back to the hostname is what the destination map exists to
-    // avoid.
-    let mut inventory = fetch_inventory(endpoint).await?;
-    inventory.ssh_targets.extend(created);
+    // avoid. Only when something was created; otherwise the first listing is
+    // already current and a second /exec call would add nothing.
+    if !created.is_empty() {
+        inventory = fetch_inventory(endpoint).await?;
+        inventory.ssh_targets.extend(created);
+    }
     let new_cluster_access = bootstrap_k3s(
         &plan,
         cmd.mode,
@@ -142,10 +150,14 @@ async fn run_status(endpoint: &str, cmd: StatusCmd) -> Result<()> {
 
 async fn run_destroy(endpoint: &str, cmd: DestroyCmd) -> Result<()> {
     let plan = load_plan(&cmd.fleet)?;
-    let current = fetch_current_vms(endpoint).await?;
+    // The listing is only read when it is used to narrow the plan. `--all-planned`
+    // is the documented recovery for a fleet whose VMs exist but whose listing
+    // cannot be read, so requiring one here would refuse to delete the VMs in
+    // exactly the case the flag exists for, and keep billing them.
     let managed = if cmd.all_planned {
         plan.nodes.iter().collect::<Vec<_>>()
     } else {
+        let current = fetch_current_vms(endpoint).await?;
         plan.nodes
             .iter()
             .filter(|node| current.contains(&node.name))
@@ -171,7 +183,7 @@ async fn run_destroy(endpoint: &str, cmd: DestroyCmd) -> Result<()> {
 }
 
 fn load_plan(path: &Path) -> Result<FleetPlan> {
-    Ok(FleetFile::load(path)?.to_plan())
+    FleetFile::load_plan(path)
 }
 
 fn exe_client(endpoint: &str) -> Result<ExeDevClient> {
@@ -467,6 +479,17 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
             "kubectl has no cluster server configured; pass --kubeconfig or set KUBECONFIG so {K3S_URL_ENV} and kubectl agree"
         );
     }
+    // Reported on its own rather than as a mismatch: the agents take K3S_URL
+    // verbatim, so a value without a scheme is rejected on every worker after the
+    // VMs exist, and the comparison below cannot say that is what went wrong.
+    if !k3s_url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+    {
+        bail!(
+            "{K3S_URL_ENV} must be an https:// URL the k3s agents can use, for example https://100.64.0.1:6443; got {k3s_url}"
+        );
+    }
     if !same_cluster_endpoint(server, k3s_url) {
         bail!(
             "kubectl points at {server} but {K3S_URL_ENV} is {k3s_url}; pass --kubeconfig for that cluster rather than labelling and deploying to another one"
@@ -480,10 +503,12 @@ async fn ensure_kubectl_targets_cluster(kubeconfig: Option<&Path>, k3s_url: &str
 ///
 /// The scheme is part of the identity: `http://host:6443` is not the HTTPS API
 /// endpoint that `https://host:6443` names, and treating them as equal would let
-/// a mistyped K3S_URL through the only check made before workers are joined.
+/// a mistyped K3S_URL through the only check made before workers are joined. It
+/// is required rather than assumed, because a scheme-less K3S_URL reaches the
+/// agents as written and k3s rejects it there.
 fn same_cluster_endpoint(left: &str, right: &str) -> bool {
     fn parts(url: &str) -> Option<(String, String, String)> {
-        let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
+        let (scheme, rest) = url.split_once("://")?;
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "https" {
             return None;
@@ -688,44 +713,38 @@ async fn wait_for_kubernetes_nodes(
             // failed probe: kubectl can answer mid-rollout with something this
             // cannot read, and giving up on the first one would spend none of the
             // retry window and report a parse error instead of the cluster state.
-            Ok(output) => {
-                // A probe that answers with something unreadable is retried like
-                // any other failed probe, through the shared tail below rather
-                // than a copy of it.
-                let Ok(nodes) = parse_kubernetes_nodes(&output).inspect_err(|err| {
-                    last_error = err.to_string();
-                }) else {
-                    if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {
-                        report_node_wait(attempt, &last_error);
-                        sleep(KUBERNETES_WAIT_DELAY).await;
+            // Recording the error and falling through to the shared tail is what
+            // keeps that from needing a copy of the retry policy.
+            Ok(output) => match parse_kubernetes_nodes(&output) {
+                Ok(nodes) => {
+                    let missing = expected
+                        .iter()
+                        .filter(|name| !nodes.contains_key(*name))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    // k3s registers a node before it can run anything, so
+                    // registration alone is not enough: the labels, taints, and
+                    // manifests applied right after this call need nodes that are
+                    // actually Ready.
+                    let unready = expected
+                        .iter()
+                        .filter(|name| nodes.get(*name).is_some_and(|node| !node.ready))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if missing.is_empty() && unready.is_empty() {
+                        return Ok(());
                     }
-                    continue;
-                };
-                let missing = expected
-                    .iter()
-                    .filter(|name| !nodes.contains_key(*name))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                // k3s registers a node before it can run anything, so registration
-                // alone is not enough: the labels, taints, and manifests applied
-                // right after this call need nodes that are actually Ready.
-                let unready = expected
-                    .iter()
-                    .filter(|name| nodes.get(*name).is_some_and(|node| !node.ready))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if missing.is_empty() && unready.is_empty() {
-                    return Ok(());
+                    last_error = [
+                        (!missing.is_empty()).then(|| format!("missing: {}", missing.join(", "))),
+                        (!unready.is_empty()).then(|| format!("not ready: {}", unready.join(", "))),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 }
-                last_error = [
-                    (!missing.is_empty()).then(|| format!("missing: {}", missing.join(", "))),
-                    (!unready.is_empty()).then(|| format!("not ready: {}", unready.join(", "))),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join("; ");
-            }
+                Err(err) => last_error = err.to_string(),
+            },
             Err(err) => last_error = err.to_string(),
         }
         if attempt < KUBERNETES_NODE_WAIT_ATTEMPTS {

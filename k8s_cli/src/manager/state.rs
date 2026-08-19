@@ -5,7 +5,7 @@ use std::{
     env, fs,
     io::{self, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 const STATE_DIR: &str = ".exedev-k8s";
@@ -19,9 +19,7 @@ pub(super) fn generated_token_path(cluster_name: &str) -> PathBuf {
 }
 
 fn state_dir(cluster_name: &str) -> PathBuf {
-    let dir = Path::new(STATE_DIR).join(state_dir_name(cluster_name));
-    adopt_legacy_state_dir(cluster_name, &dir);
-    dir
+    Path::new(STATE_DIR).join(state_dir_name(cluster_name))
 }
 
 /// TODO(remove after the next release): moves state written under the raw cluster
@@ -31,12 +29,19 @@ fn state_dir(cluster_name: &str) -> PathBuf {
 /// directory, mints a fresh token, and installs a server the existing agents
 /// cannot join. Only an exact rename is attempted; anything else is left alone
 /// for the operator to resolve.
-fn adopt_legacy_state_dir(cluster_name: &str, current: &Path) {
-    let legacy = Path::new(STATE_DIR).join(cluster_name);
+///
+/// Called once, at bootstrap entry, rather than from the path accessors: this
+/// renames a directory relative to the working directory, which is not something
+/// computing a path may do.
+pub(super) fn adopt_legacy_state_dir(cluster_name: &str) {
+    let Some(legacy) = legacy_state_dir(cluster_name) else {
+        return;
+    };
+    let current = state_dir(cluster_name);
     if legacy == current || current.exists() || !legacy.is_dir() {
         return;
     }
-    if fs::rename(&legacy, current).is_ok() {
+    if fs::rename(&legacy, &current).is_ok() {
         eprintln!(
             "note: moved cluster state from {} to {}",
             legacy.display(),
@@ -45,12 +50,31 @@ fn adopt_legacy_state_dir(cluster_name: &str, current: &Path) {
     }
 }
 
+/// The directory a previous release used for this cluster, when that directory
+/// is inside the state directory.
+///
+/// The legacy layout joined the raw cluster name, so a name carrying `..` or a
+/// root resolved outside `.exedev-k8s` even then. Nothing this tool wrote is at
+/// such a path, only whatever the operator keeps there, and renaming it would
+/// move that directory into `.exedev-k8s` — the escape sanitizing the name exists
+/// to prevent. A name that is one or more plain components stayed inside, so its
+/// state is still adopted.
+fn legacy_state_dir(cluster_name: &str) -> Option<PathBuf> {
+    let legacy = Path::new(cluster_name);
+    let mut components = legacy.components().peekable();
+    // An empty name has no components at all, and `all` would call that a match.
+    components.peek()?;
+    components
+        .all(|component| matches!(component, Component::Normal(_)))
+        .then(|| Path::new(STATE_DIR).join(legacy))
+}
+
 /// Keeps a cluster name from reaching outside the state directory.
 ///
 /// TODO(remove after the next release): a cluster whose name contains anything
 /// outside `[A-Za-z0-9_-]` used its raw name as the directory before this, so its
 /// kubeconfig and token are still at `.exedev-k8s/<raw name>/`. `adopt_legacy_state_dir`
-/// moves them across on first use; delete it, and this note, once no such
+/// moves them across at bootstrap entry; delete it, and this note, once no such
 /// directory is expected to exist.
 ///
 /// The name comes from fleet.yaml, which only requires it to be non-empty, so

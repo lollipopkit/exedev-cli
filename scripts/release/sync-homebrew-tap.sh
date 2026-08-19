@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORMULA_NAME="${FORMULA_NAME:-exedev-cli}"
 FORMULA_CLASS="${FORMULA_CLASS:-ExedevCli}"
@@ -11,8 +10,20 @@ FORMULA_LICENSE="${FORMULA_LICENSE:-OSL-3.0}"
 REPO_SLUG="${REPO_SLUG:-lollipopkit/exedev-cli}"
 TAP_REPO_PATH="${TAP_REPO_PATH:-$HOME/proj/homebrew-tap}"
 TAP_FORMULA_PATH="${TAP_FORMULA_PATH:-}"
-EXPLICIT_TAP_FORMULA_PATH="${TAP_FORMULA_PATH:-}"
-RELEASE_TAG="${1:-${RELEASE_TAG:-}}"
+
+# `${1:-...}` would treat an explicitly passed empty tag as no argument at all,
+# fall back to RELEASE_TAG or to the latest published release, and generate a
+# formula for a version the caller never named. Same rule as check-version.sh.
+if [[ $# -ge 1 ]]; then
+  RELEASE_TAG="$1"
+  if [[ -z "$RELEASE_TAG" ]]; then
+    echo "usage: $(basename "$0") [tag]" >&2
+    echo "The tag argument was empty; pass a tag such as v0.1.22 or omit it entirely." >&2
+    exit 1
+  fi
+else
+  RELEASE_TAG="${RELEASE_TAG:-}"
+fi
 
 # Keep in sync with the `Package release archive` step in .github/workflows/release.yml:
 # the archive name and the binaries it carries are defined there, and a formula that
@@ -153,17 +164,43 @@ if [[ ! -d "$TAP_REPO_PATH" ]]; then
 fi
 TAP_REPO_REAL="$(cd "$TAP_REPO_PATH" && pwd -P)"
 FORMULA_PARENT="$(dirname "$TAP_FORMULA_PATH")"
+
+require_inside_tap() {
+  case "$1/" in
+    "$TAP_REPO_REAL"/*) return 0 ;;
+  esac
+  echo "TAP_FORMULA_PATH resolves outside TAP_REPO_PATH:" >&2
+  echo "  formula: $1" >&2
+  echo "  tap:     $TAP_REPO_REAL" >&2
+  exit 1
+}
+
+# Resolved without creating anything: `cd`/`pwd -P` needs the directory to exist,
+# and creating it to find out it is outside the tap leaves those directories
+# behind wherever the rejected path pointed. Walk up to the nearest existing
+# ancestor, resolve that, and re-append the part that is missing — `..` is
+# already rejected above, so the missing part cannot lead back out.
+FORMULA_PARENT_MISSING=""
+FORMULA_PARENT_PROBE="$FORMULA_PARENT"
+while [[ ! -d "$FORMULA_PARENT_PROBE" ]]; do
+  FORMULA_PARENT_MISSING="$(basename "$FORMULA_PARENT_PROBE")${FORMULA_PARENT_MISSING:+/$FORMULA_PARENT_MISSING}"
+  FORMULA_PARENT_NEXT="$(dirname "$FORMULA_PARENT_PROBE")"
+  if [[ "$FORMULA_PARENT_NEXT" == "$FORMULA_PARENT_PROBE" ]]; then
+    break
+  fi
+  FORMULA_PARENT_PROBE="$FORMULA_PARENT_NEXT"
+done
+if [[ ! -d "$FORMULA_PARENT_PROBE" ]]; then
+  echo "TAP_FORMULA_PATH has no existing ancestor to resolve: $TAP_FORMULA_PATH" >&2
+  exit 1
+fi
+require_inside_tap "$(cd "$FORMULA_PARENT_PROBE" && pwd -P)${FORMULA_PARENT_MISSING:+/$FORMULA_PARENT_MISSING}"
+
 mkdir -p "$FORMULA_PARENT"
-FORMULA_PARENT_REAL="$(cd "$FORMULA_PARENT" && pwd -P)"
-case "$FORMULA_PARENT_REAL/" in
-  "$TAP_REPO_REAL"/*) ;;
-  *)
-    echo "TAP_FORMULA_PATH resolves outside TAP_REPO_PATH:" >&2
-    echo "  formula: $FORMULA_PARENT_REAL" >&2
-    echo "  tap:     $TAP_REPO_REAL" >&2
-    exit 1
-    ;;
-esac
+# Checked again now that the whole path exists: the decision above was made on
+# names that had not been created yet, so a symlink planted at one of them in the
+# meantime is what this second resolve catches.
+require_inside_tap "$(cd "$FORMULA_PARENT" && pwd -P)"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -240,7 +277,7 @@ quoted_list() {
   echo "$out"
 }
 
-mkdir -p "$(dirname "$TAP_FORMULA_PATH")"
+# The parent was created above, once the confinement check accepted it.
 # Written beside the target and renamed over it: `cat >` follows a symlink put
 # there after the checks above, while rename replaces the entry itself.
 FORMULA_STAGED="$(mktemp "$(dirname "$TAP_FORMULA_PATH")/.${FORMULA_NAME}.XXXXXX")"
@@ -299,5 +336,5 @@ echo "Generated tap formula: $TAP_FORMULA_PATH"
 echo "Release tag: $RELEASE_TAG"
 echo "Version: $VERSION"
 for platform in "${PLATFORMS[@]}"; do
-  echo "SHA256 ($platform): $(sha_for $platform)"
+  echo "SHA256 ($platform): $(sha_for "$platform")"
 done

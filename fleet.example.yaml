@@ -80,4 +80,5 @@ sparePools:
     vmPrefix: ingress
     isolated: true
     labels:
-      exedev.dev/role: ingress
+      # exedev.dev/role is generated per node; a fleet file may not set it.
+      exedev.dev/purpose: ingress

@@ -63,7 +63,18 @@ k3s_pidfile_alive() {
   # wrapper rather than k3s itself, so its comm never says k3s. The full argument
   # vector does, and still tells an unrelated process that inherited the pid from
   # the one this wrote down.
-  k3s_recorded_args="$(${SUDO} ps -p "$k3s_recorded_pid" -o args= 2>/dev/null || true)"
+  if [ -r "/proc/$k3s_recorded_pid/cmdline" ]; then
+    # The NUL separators are dropped by the substitution, which is fine: only
+    # whether the vector mentions k3s is being decided here.
+    k3s_recorded_args="$(cat "/proc/$k3s_recorded_pid/cmdline" 2>/dev/null || true)"
+  elif command -v ps >/dev/null 2>&1; then
+    k3s_recorded_args="$(${SUDO} ps -p "$k3s_recorded_pid" -o args= 2>/dev/null || true)"
+  else
+    # Neither is available, so the pid cannot be identified. `kill -0` has already
+    # said a process with it exists; reporting "not running" instead would start a
+    # second k3s on every rerun and never let the readiness loop below finish.
+    return 0
+  fi
   case "$k3s_recorded_args" in
     *k3s*) return 0 ;;
     *) return 1 ;;

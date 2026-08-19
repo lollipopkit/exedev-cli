@@ -535,6 +535,12 @@ fn cluster_endpoints_compare_by_host_and_port() {
     ));
     assert!(same_cluster_endpoint(
         "https://k3s.example",
+        "https://k3s.example:6443"
+    ));
+    // A scheme-less K3S_URL reaches the agents as written and k3s rejects it
+    // there, so it cannot pass the check made before any worker is joined.
+    assert!(!same_cluster_endpoint(
+        "https://k3s.example:6443",
         "k3s.example:6443"
     ));
     assert!(!same_cluster_endpoint(
@@ -752,7 +758,7 @@ fn malformed_destinations_fall_back_to_the_hostname() {
 #[test]
 fn duplicate_generated_vm_names_are_rejected() {
     // Both the control plane and the task expand to `node-1`.
-    let err = FleetFile::from_yaml_str(
+    let err = FleetFile::plan_from_yaml_str(
         r#"
 cluster:
   name: dup
@@ -830,15 +836,16 @@ projects:
 "#
         )
     };
-    let reserved = FleetFile::from_yaml_str(&fleet("          exedev.dev/role: control-plane"))
-        .unwrap_err()
-        .to_string();
+    let reserved =
+        FleetFile::plan_from_yaml_str(&fleet("          exedev.dev/role: control-plane"))
+            .unwrap_err()
+            .to_string();
     assert!(
         reserved.contains("which exedev-k8s generates"),
         "{reserved}"
     );
 
-    let bad_key = FleetFile::from_yaml_str(&fleet("          \"bad key\": value"))
+    let bad_key = FleetFile::plan_from_yaml_str(&fleet("          \"bad key\": value"))
         .unwrap_err()
         .to_string();
     assert!(
@@ -846,7 +853,7 @@ projects:
         "{bad_key}"
     );
 
-    let bad_value = FleetFile::from_yaml_str(&fleet("          team: \"has space\""))
+    let bad_value = FleetFile::plan_from_yaml_str(&fleet("          team: \"has space\""))
         .unwrap_err()
         .to_string();
     assert!(
@@ -856,8 +863,10 @@ projects:
 
     // A label of the user's own is accepted, including one under the tool's
     // prefix that the tool does not generate: the repo's own fixtures use those.
-    assert!(FleetFile::from_yaml_str(&fleet("          team: platform")).is_ok());
-    assert!(FleetFile::from_yaml_str(&fleet("          exedev.dev/test-case: shared")).is_ok());
+    assert!(FleetFile::plan_from_yaml_str(&fleet("          team: platform")).is_ok());
+    assert!(
+        FleetFile::plan_from_yaml_str(&fleet("          exedev.dev/test-case: shared")).is_ok()
+    );
 }
 
 #[test]
@@ -880,6 +889,118 @@ fn an_empty_listing_response_is_an_error() {
     assert!(parse_vm_names("").is_err());
     assert!(parse_vm_names("   \n").is_err());
     assert!(parse_vm_names("[]").unwrap().is_empty());
+}
+
+#[test]
+fn legacy_state_adoption_stays_inside_the_state_directory() {
+    let sandbox = StateSandbox::enter("legacyescape");
+    std::fs::create_dir_all(".exedev-k8s").unwrap();
+    let outside = sandbox.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("marker"), "untouched").unwrap();
+
+    // The legacy directory is the raw cluster name, which is what sanitizing the
+    // name exists to keep out of a path: adopting it must not resolve `..` and
+    // move a directory that was never this tool's state.
+    adopt_legacy_state_dir("../outside");
+    assert!(outside.join("marker").is_file(), "outside directory moved");
+    let adopted = std::fs::read_dir(".exedev-k8s").unwrap().count();
+    assert_eq!(adopted, 0, "state directory gained an entry");
+
+    // A name that stayed inside the state directory is still adopted, which is
+    // the whole point of the fallback — including a nested one, which the legacy
+    // layout created as `.exedev-k8s/a/b`.
+    for legacy in ["prod.example", "nested/name"] {
+        std::fs::create_dir_all(format!(".exedev-k8s/{legacy}")).unwrap();
+        std::fs::write(format!(".exedev-k8s/{legacy}/k3s-token"), "existing").unwrap();
+        adopt_legacy_state_dir(legacy);
+        assert_eq!(
+            std::fs::read_to_string(generated_token_path(legacy)).unwrap(),
+            "existing",
+            "{legacy} was not adopted"
+        );
+    }
+}
+
+#[test]
+fn path_accessors_do_not_touch_the_filesystem() {
+    let sandbox = StateSandbox::enter("purepaths");
+    std::fs::create_dir_all(".exedev-k8s/prod.example").unwrap();
+    std::fs::write(".exedev-k8s/prod.example/k3s-token", "existing").unwrap();
+
+    // Computing a path is not a migration: the rename belongs to the explicit
+    // call bootstrap makes, so these leave the legacy directory where it is.
+    let _ = generated_token_path("prod.example");
+    let _ = generated_kubeconfig_path("prod.example");
+    assert!(sandbox.dir.join(".exedev-k8s/prod.example").is_dir());
+}
+
+#[test]
+fn shipped_fleet_files_load() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    for relative in [
+        "fleet.example.yaml",
+        "k8s_cli/test-fleets/01-minimal-new.yaml",
+        "k8s_cli/test-fleets/02-existing-workers.yaml",
+        "k8s_cli/test-fleets/03-isolated-and-shared.yaml",
+    ] {
+        let path = repo.join(relative);
+        // The files this repo ships are the ones users copy, so a validation rule
+        // they no longer satisfy is a broken example rather than a caught mistake.
+        FleetFile::load_plan(&path)
+            .unwrap_or_else(|err| panic!("{relative} no longer loads: {err:#}"));
+    }
+    // The negative fixture still fails, and for the reason it documents.
+    let err = FleetFile::load_plan(&repo.join("k8s_cli/test-fleets/04-invalid-budget.yaml"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("failed to load fleet file"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn generated_names_are_validated_before_anything_is_created() {
+    let fleet = |project: &str, task: &str, prefix: &str| {
+        format!(
+            r#"
+cluster:
+  name: c
+  controlPlane:
+    nodes: 1
+    vmPrefix: ctl
+projects:
+  {project}:
+    tasks:
+      {task}:
+        nodes: 1
+        replicas: 1
+        vmPrefix: {prefix}
+"#
+        )
+    };
+    // These become exedev.dev/project, exedev.dev/task, exedev.dev/pool, and the
+    // pool taint, none of which kubectl sees until every VM exists.
+    let project = FleetFile::plan_from_yaml_str(&fleet("\"web app\"", "a", "w"))
+        .unwrap_err()
+        .to_string();
+    assert!(project.contains("exedev.dev/project"), "{project}");
+
+    let task = FleetFile::plan_from_yaml_str(&fleet("p1", "\"build v2\"", "w"))
+        .unwrap_err()
+        .to_string();
+    assert!(task.contains("exedev.dev/task"), "{task}");
+
+    // A VM name that is not a DNS label is dropped by the `ls` parser, so the VM
+    // would be created again on every run.
+    let name = FleetFile::plan_from_yaml_str(&fleet("p1", "a", "Web"))
+        .unwrap_err()
+        .to_string();
+    assert!(name.contains("is not a DNS label"), "{name}");
+    assert!(name.contains("Web-1"), "{name}");
+
+    assert!(FleetFile::plan_from_yaml_str(&fleet("p1", "a", "w")).is_ok());
 }
 
 #[test]

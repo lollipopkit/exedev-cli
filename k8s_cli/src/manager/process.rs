@@ -24,6 +24,13 @@ const REMOTE_SSH_TIMEOUT: Duration = Duration::from_secs(900);
 /// is stuck rather than waiting on the API.
 const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Upper bound on a local command whose output is streamed through. Its callers
+/// are `kubectl apply`, `label`, and `taint`, which can spend minutes on a large
+/// manifest directory, so this is far above any real run and only bounds the
+/// hangs `--request-timeout` cannot: an exec credential plugin, a credential
+/// helper, or a wedged resolver that blocks before any request is made.
+const RUN_COMMAND_TIMEOUT: Duration = Duration::from_secs(900);
+
 const TAILNET_LOCK_AUTH_REQUIRED_STATUS: i32 = 126;
 
 /// Emitted by `CHECK_TAILNET_LOCK_SCRIPT` alongside its 126 exit.
@@ -187,16 +194,22 @@ pub(super) async fn run_command(program: &str, args: &[&str], stdout: Stdio) -> 
         "{}",
         output::command(format!("$ {}", display_command(program, args)))
     );
-    let status = TokioCommand::new(program)
+    let child = TokioCommand::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::inherit())
-        // Cancelling this future must not leave the child behind.
+        // Cancelling this future, including by the timeout below, must not leave
+        // the child behind.
         .kill_on_drop(true)
-        .status()
-        .await
-        .with_context(|| format!("failed to run {program}"))?;
+        .status();
+    let status = match timeout(RUN_COMMAND_TIMEOUT, child).await {
+        Ok(result) => result.with_context(|| format!("failed to run {program}"))?,
+        Err(_) => bail!(
+            "{program} produced no result within {}s and was killed",
+            RUN_COMMAND_TIMEOUT.as_secs()
+        ),
+    };
     if !status.success() {
         bail!("{program} exited with status {status}");
     }

@@ -201,6 +201,9 @@ pub(super) fn parse_vm_names_from_text(text: &str) -> BTreeSet<String> {
 /// `VM vm-1 is unavailable` would otherwise contribute `Error:` and `VM` as VMs,
 /// and a planned VM reported that way would look like it already exists. exe.dev
 /// names are DNS labels, so anything else is prose rather than a row.
+///
+/// `fleet::is_vm_name` holds every planned name to the same shape, so a fleet's
+/// own VMs are never the thing this filters out.
 fn is_vm_name(word: &str) -> bool {
     !word.is_empty()
         && word.len() <= 63

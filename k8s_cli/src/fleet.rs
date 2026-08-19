@@ -161,6 +161,28 @@ fn is_label_value(value: &str) -> bool {
         && value.ends_with(|ch: char| ch.is_ascii_alphanumeric())
 }
 
+/// The `exedev.dev/pool` value a task expands to. Shared with `validate` so the
+/// value it checks is the one `to_plan` emits.
+fn task_pool_name(project_name: &str, task_name: &str) -> String {
+    format!("{project_name}-{task_name}")
+}
+
+/// Whether a generated name can be an exe.dev VM name.
+///
+/// The same string is the VM name, the `--node-name` k3s registers, and the row
+/// `parse_vm_names` reads back out of `exe.dev ls`, all of which are DNS labels.
+/// A name that is not one is dropped by that reader, so bootstrap concludes the
+/// VM does not exist and tries to create it again on every run.
+fn is_vm_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && name.ends_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
 /// The labels `to_plan` sets itself. Other keys under the tool's prefix stay
 /// available to fleet files, which use them for their own bookkeeping.
 const GENERATED_LABEL_KEYS: [&str; 4] = [
@@ -190,20 +212,25 @@ impl FleetFile {
 }
 
 impl FleetFile {
-    pub(crate) fn load(path: &Path) -> Result<Self> {
+    pub(crate) fn load_plan(path: &Path) -> Result<FleetPlan> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read fleet file {}", path.display()))?;
-        Self::from_yaml_str(&text)
+        Self::plan_from_yaml_str(&text)
             .with_context(|| format!("failed to load fleet file {}", path.display()))
     }
 
-    pub(crate) fn from_yaml_str(text: &str) -> Result<Self> {
-        let fleet = serde_yaml::from_str::<Self>(text).context("failed to parse fleet file")?;
-        fleet.validate()?;
-        Ok(fleet)
+    pub(crate) fn plan_from_yaml_str(text: &str) -> Result<FleetPlan> {
+        serde_yaml::from_str::<Self>(text)
+            .context("failed to parse fleet file")?
+            .validate()
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Checks the fleet file and returns the plan it expands to.
+    ///
+    /// The plan is handed back rather than left for the caller to rebuild: the
+    /// duplicate-name check below needs the expanded node set, and expanding it
+    /// a second time clones every node, label map, and tag list for nothing.
+    pub(crate) fn validate(&self) -> Result<FleetPlan> {
         if self.cluster.name.trim().is_empty() {
             bail!("cluster.name must not be empty");
         }
@@ -232,7 +259,21 @@ impl FleetFile {
         if self.cluster.control_plane.cpu == Some(0) {
             bail!("cluster.controlPlane.cpu must be greater than 0");
         }
+        // Pool, project, and task names become label values and the pool taint in
+        // `to_plan`, on the same terms as the user labels checked below: they
+        // reach `kubectl label` and `kubectl taint` only after every VM has been
+        // created and joined, so a name kubectl rejects has to fail here.
         for (project_name, project) in &self.projects {
+            // A project with no tasks expands to no node, so none of its names
+            // reach a label.
+            if project.tasks.is_empty() {
+                continue;
+            }
+            if !is_label_value(project_name) {
+                bail!(
+                    "projects.{project_name} is not a valid Kubernetes label value; it becomes exedev.dev/project on every node of this project"
+                );
+            }
             for (task_name, task) in &project.tasks {
                 if task.nodes == 0 {
                     bail!("projects.{project_name}.tasks.{task_name}.nodes must be greater than 0");
@@ -242,6 +283,19 @@ impl FleetFile {
                 }
                 if task.cpu == Some(0) {
                     bail!("projects.{project_name}.tasks.{task_name}.cpu must be greater than 0");
+                }
+                if !is_label_value(task_name) {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} is not a valid Kubernetes label value; it becomes exedev.dev/task on every node of this task"
+                    );
+                }
+                // Checked as a whole, not just per part: two valid names still
+                // join into a pool value that can exceed the 63-character limit.
+                let pool = task_pool_name(project_name, task_name);
+                if !is_label_value(&pool) {
+                    bail!(
+                        "projects.{project_name}.tasks.{task_name} produces the pool name {pool}, which is not a valid Kubernetes label value for exedev.dev/pool"
+                    );
                 }
             }
         }
@@ -254,6 +308,11 @@ impl FleetFile {
             }
             if pool.cpu == Some(0) {
                 bail!("sparePools.{pool_name}.cpu must be greater than 0");
+            }
+            if !is_label_value(pool_name) {
+                bail!(
+                    "sparePools.{pool_name} is not a valid Kubernetes label value; it becomes exedev.dev/pool on every node of this pool"
+                );
             }
         }
         // Labels reach `kubectl label` untouched after the fleet is provisioned, so
@@ -283,8 +342,16 @@ impl FleetFile {
         // Names come from `to_plan` rather than a second expansion here: a copy of
         // the naming rules would eventually disagree with the plan it is meant to
         // check.
+        let plan = self.to_plan();
         let mut seen = BTreeSet::new();
-        for node in self.to_plan().nodes {
+        for node in &plan.nodes {
+            if !is_vm_name(&node.name) {
+                bail!(
+                    "fleet produces the VM name {}, which is not a DNS label; give pool {} a vmPrefix of lowercase letters, digits, and dashes",
+                    node.name,
+                    node.pool
+                );
+            }
             if !seen.insert(node.name.clone()) {
                 bail!(
                     "fleet produces two VMs named {}; change a vmPrefix so every node has its own name",
@@ -292,10 +359,10 @@ impl FleetFile {
                 );
             }
         }
-        Ok(())
+        Ok(plan)
     }
 
-    pub(crate) fn to_plan(&self) -> FleetPlan {
+    fn to_plan(&self) -> FleetPlan {
         let mut nodes = Vec::new();
         let default_image = self.default_image();
         let mut control_labels = BTreeMap::new();
@@ -320,7 +387,7 @@ impl FleetFile {
 
         for (project_name, project) in &self.projects {
             for (task_name, task) in &project.tasks {
-                let pool = format!("{project_name}-{task_name}");
+                let pool = task_pool_name(project_name, task_name);
                 for index in 1..=task.nodes {
                     let mut labels = task.labels.clone();
                     labels.insert("exedev.dev/project".into(), project_name.clone());

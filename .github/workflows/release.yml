@@ -44,35 +44,37 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${INPUT_TAG_NAME}"
-            # Validated before it is used, not after: the tag goes into an API path
-            # below, where `../../owner/repo/git/ref/tags/v1` would traverse to
-            # another repository and resolve a SHA there.
-            scripts/release/check-version.sh "${tag}" > /dev/null
-            # One read of the ref, then one of the tag object: asking twice can
-            # pair a SHA from before a tag move with a type from after it.
-            ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
-            sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
-            type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
-            # An annotated tag points at a tag object, not the commit it names,
-            # and a tag object can name another one. Bounded so a cycle cannot
-            # spin here.
-            for _ in 1 2 3 4 5; do
-              [[ "${type}" == "tag" ]] || break
-              tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
-              sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
-              type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
-            done
-            if [[ "${type}" != "commit" ]]; then
-              echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
-              exit 1
-            fi
           else
             tag="${GITHUB_REF_NAME}"
-            sha="${GITHUB_SHA}"
           fi
-          # The push path only filters `v*`, so a pushed `v1.2` is rejected here
-          # rather than in each matrix build, after four checkouts and toolchains.
+          # Validated before it is used, not after: the tag goes into an API path
+          # below, where `../../owner/repo/git/ref/tags/v1` would traverse to
+          # another repository and resolve a SHA there. The push path only filters
+          # `v*`, so a pushed `v1.2` is also rejected here rather than in each
+          # matrix build, after four checkouts and toolchains.
           scripts/release/check-version.sh "${tag}" > /dev/null
+          # Both paths resolve through the API, so the SHA pinned here is peeled
+          # the same way the verify and confirm jobs peel it. GITHUB_SHA can carry
+          # the tag object of an annotated tag, which those jobs would then report
+          # as a tag that moved.
+          # One read of the ref, then one of the tag object: asking twice can
+          # pair a SHA from before a tag move with a type from after it.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+          sha="$(printf '%s' "${ref_json}" | jq -r '.object.sha')"
+          type="$(printf '%s' "${ref_json}" | jq -r '.object.type')"
+          # An annotated tag points at a tag object, not the commit it names,
+          # and a tag object can name another one. Bounded so a cycle cannot
+          # spin here.
+          for _ in 1 2 3 4 5; do
+            [[ "${type}" == "tag" ]] || break
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+            sha="$(printf '%s' "${tag_json}" | jq -r '.object.sha')"
+            type="$(printf '%s' "${tag_json}" | jq -r '.object.type')"
+          done
+          if [[ "${type}" != "commit" ]]; then
+            echo "tag ${tag} does not resolve to a commit (got ${type})" >&2
+            exit 1
+          fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 
